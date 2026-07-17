@@ -1,0 +1,108 @@
+#include <assert.h>
+#include <math.h>
+#include <stdio.h>
+
+#include "encoder.h"
+
+static int16 g_mock_hardware_count[5];
+static unsigned int g_mock_clear_calls[5];
+static unsigned int g_mock_dir_init_calls;
+static unsigned int g_mock_quad_init_calls;
+static unsigned int g_mock_oid_init_calls;
+static uint16_t g_mock_oid_angle;
+
+typedef struct
+{
+    encoder_index_enum index;
+    encoder_channel1_enum channel1;
+    encoder_channel2_enum channel2;
+} MOCK_ENCODER_INIT;
+
+static MOCK_ENCODER_INIT g_mock_dir_init[2];
+static MOCK_ENCODER_INIT g_mock_quad_init;
+
+void oid_encoder_init(void)
+{
+    g_mock_oid_init_calls++;
+}
+
+uint16_t oid_encoder_get_angle(void)
+{
+    return g_mock_oid_angle;
+}
+
+int16 encoder_get_count(encoder_index_enum encoder_n)
+{
+    return g_mock_hardware_count[encoder_n];
+}
+
+void encoder_clear_count(encoder_index_enum encoder_n)
+{
+    g_mock_hardware_count[encoder_n] = 0;
+    g_mock_clear_calls[encoder_n]++;
+}
+
+void encoder_dir_init(encoder_index_enum encoder_n,
+                      encoder_channel1_enum channel1,
+                      encoder_channel2_enum channel2)
+{
+    assert(g_mock_dir_init_calls < 2U);
+    g_mock_dir_init[g_mock_dir_init_calls].index = encoder_n;
+    g_mock_dir_init[g_mock_dir_init_calls].channel1 = channel1;
+    g_mock_dir_init[g_mock_dir_init_calls].channel2 = channel2;
+    g_mock_dir_init_calls++;
+}
+
+void encoder_quad_init(encoder_index_enum encoder_n,
+                       encoder_channel1_enum channel1,
+                       encoder_channel2_enum channel2)
+{
+    g_mock_quad_init.index = encoder_n;
+    g_mock_quad_init.channel1 = channel1;
+    g_mock_quad_init.channel2 = channel2;
+    g_mock_quad_init_calls++;
+}
+
+static int float_is_close(float actual, float expected)
+{
+    return fabsf(actual - expected) < 0.0001f;
+}
+
+int main(void)
+{
+    QdInit();
+
+    assert(g_mock_oid_init_calls == 1U);
+    assert(g_mock_quad_init_calls == 1U);
+    assert(g_mock_quad_init.index == TIM2_ENCODER);
+    assert(g_mock_quad_init.channel1 == TIM2_ENCODER_CH1_P33_7);
+    assert(g_mock_quad_init.channel2 == TIM2_ENCODER_CH2_P33_6);
+
+    assert(g_mock_dir_init_calls == 2U);
+    assert(g_mock_dir_init[0].index == TIM3_ENCODER);
+    assert(g_mock_dir_init[0].channel1 == TIM3_ENCODER_CH1_P02_6);
+    assert(g_mock_dir_init[0].channel2 == TIM3_ENCODER_CH2_P02_7);
+    assert(g_mock_dir_init[1].index == TIM4_ENCODER);
+    assert(g_mock_dir_init[1].channel1 == TIM4_ENCODER_CH1_P02_8);
+    assert(g_mock_dir_init[1].channel2 == TIM4_ENCODER_CH2_P00_9);
+
+    g_mock_hardware_count[TIM2_ENCODER] = 100;
+    g_mock_hardware_count[TIM3_ENCODER] = 20;
+    g_mock_hardware_count[TIM4_ENCODER] = 30;
+    g_mock_oid_angle = 2048U;
+    GetSpeed();
+
+    assert(count[0] == 100U);
+    assert(count[1] == 20U);
+    assert(count[2] == 30U); /* verifies that the right side reads TIM4 */
+    assert(float_is_close(car_speed[0], 100.0f / 3413.33f));
+    assert(float_is_close(car_speed[1], 20.0f));
+    assert(float_is_close(car_speed[2], 30.0f));
+    assert(float_is_close(car_angle, 180.0f));
+    assert(g_mock_clear_calls[TIM2_ENCODER] == 1U);
+    assert(g_mock_clear_calls[TIM3_ENCODER] == 1U);
+    assert(g_mock_clear_calls[TIM4_ENCODER] == 1U);
+
+    puts("encoder host tests passed");
+    return 0;
+}

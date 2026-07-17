@@ -1,0 +1,73 @@
+#include <assert.h>
+#include <stdio.h>
+
+#include "lora_host_stubs.h"
+
+static uint8 g_rx_data[LORA3A22_DATA_LEN];
+static uint8 g_rx_index;
+static void (*g_wireless_callback)(void);
+
+uint8 uart_read_byte(int index)
+{
+    (void)index;
+    return g_rx_data[g_rx_index++];
+}
+void uart_init(int index, int baud, int tx_pin, int rx_pin)
+{
+    (void)index; (void)baud; (void)tx_pin; (void)rx_pin;
+}
+void uart_rx_interrupt(int index, int enable) { (void)index; (void)enable; }
+void set_wireless_type(int type, void (*callback)(void))
+{
+    (void)type;
+    g_wireless_callback = callback;
+}
+uint32 interrupt_global_disable(void) { return 1U; }
+void interrupt_global_enable(uint32 state) { (void)state; }
+
+int main(void)
+{
+    lora3a22_uart_transfer_dat_struct frame;
+    lora3a22_uart_transfer_dat_struct snapshot;
+    uint32 sequence;
+    uint8 sum = 0U;
+    uint8 *bytes = (uint8 *)&frame;
+    unsigned i;
+
+    lora3a22_init();
+    assert(g_wireless_callback == lora3a22_uart_callback);
+    assert(lora3a22_state_flag == 0U);
+
+    memset(&frame, 0, sizeof(frame));
+    frame.head = LORA3A22_FRAME_STAR;
+    frame.joystick[0] = 321;
+    frame.joystick[1] = -654;
+    frame.key[2] = 1U;
+    frame.switch_key[3] = 1U;
+    for(i = 0U; i < LORA3A22_DATA_LEN; ++i)
+    {
+        if(i != 1U) { sum = (uint8)(sum + bytes[i]); }
+    }
+    frame.sum_check = sum;
+    memcpy(g_rx_data, &frame, sizeof(frame));
+    g_rx_index = 0U;
+    for(i = 0U; i < LORA3A22_DATA_LEN; ++i)
+    {
+        g_wireless_callback();
+    }
+
+    assert(lora3a22_state_flag == 1U);
+    assert(lora3a22_get_snapshot(&snapshot, &sequence) == 1U);
+    assert(sequence == 1U);
+    assert(snapshot.joystick[0] == 321);
+    assert(snapshot.joystick[1] == -654);
+    assert(snapshot.switch_key[3] == 1U);
+    assert(lora3a22_get_snapshot(&snapshot, &sequence) == 0U);
+
+    for(i = 0U; i < 61U; ++i) { lora3a22_5ms_callback(); }
+    assert(lora3a22_state_flag == 0U);
+    assert(lora3a22_response_time > LORA3A22_LINK_TIMEOUT_MS);
+
+    puts("lora3a22_test: PASS");
+    return 0;
+}

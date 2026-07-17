@@ -1,0 +1,6 @@
+# Local IDE workspace state
+.metadata/
+.vscode/
+
+# Generated AURIX/TASKING build output
+TC387_KDC_7_13/Debug/

@@ -1,0 +1,139 @@
+#include <assert.h>
+#include <math.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "gps_ins_port_host_stubs.h"
+#include "TopSpeed_GPS_INS_Port.h"
+
+gnss_info_struct gnss;
+volatile uint8 gnss_flag;
+int16 imu963ra_gyro_x;
+int16 imu963ra_gyro_y;
+int16 imu963ra_gyro_z;
+int16 imu963ra_acc_x;
+int16 imu963ra_acc_y;
+int16 imu963ra_acc_z = 1000;
+
+static unsigned g_gnss_init_count;
+
+boolean IfxCpu_disableInterrupts(void) { return 1U; }
+void IfxCpu_restoreInterrupts(boolean state) { (void)state; }
+uint8 imu963ra_init(void) { return 0U; }
+void imu963ra_get_gyro(void) {}
+void imu963ra_get_acc(void) {}
+float imu963ra_gyro_transition(float raw) { return raw; }
+float imu963ra_acc_transition(int16 raw) { return (float)raw / 1000.0f; }
+void system_delay_ms(uint32 milliseconds) { (void)milliseconds; }
+void gnss_init(int device) { (void)device; ++g_gnss_init_count; }
+uint8 gnss_data_parse(void) { return 0U; }
+
+static int nearly_equal(float a, float b, float tolerance)
+{
+    return fabsf(a - b) <= tolerance;
+}
+
+int main(void)
+{
+    TopSpeed_GPS_INS_Output navigation;
+    TopSpeed_GPS_INS_GPS_Output gps;
+    TopSpeed_GPS_INS_IMU_Output imu;
+    static const uint8_t solutions[] = {
+        NAVIGATION_SOLUTION_MAHONY,
+        NAVIGATION_SOLUTION_FUSION,
+        NAVIGATION_SOLUTION_GPS_INS
+    };
+    unsigned solution_index;
+    unsigned tick;
+    float position_x_before_turn_drive;
+
+    assert(TopSpeed_GPS_INS_PortInit(0U, 0U) == 2U);
+
+    /* 三种姿态后端都必须能驱动同一套编码器局部坐标递推。 */
+    for(solution_index = 0U;
+        solution_index < (sizeof(solutions) / sizeof(solutions[0]));
+        ++solution_index)
+    {
+        assert(TopSpeed_GPS_INS_PortInit(0U, solutions[solution_index]) == 0U);
+        assert(TopSpeed_GPS_INS_PortGetNavigationSolution() ==
+               solutions[solution_index]);
+        assert(strcmp(TopSpeed_GPS_INS_PortGetNavigationSolutionName(),
+                      "INVALID") != 0);
+        assert(g_gnss_init_count == 0U);
+        TopSpeed_GPS_INS_PortGetGPSOutput(&gps);
+        assert(gps.enabled == 0U);
+
+        /* 局部 (0,0) + 零度航向，以 2m/s 运行 1 秒，应向北约 2m。 */
+        TopSpeed_GPS_INS_PortEncoderSpeedUpdate(2.0f);
+        for(tick = 0U; tick < 200U; ++tick)
+        {
+            TopSpeed_GPS_INS_Port5msCallback();
+            TopSpeed_GPS_INS_PortEncoderSpeedUpdate(2.0f);
+        }
+        TopSpeed_GPS_INS_PortGetOutput(&navigation);
+        assert(navigation.initialized == 1U);
+        assert(navigation.valid == 1U);
+        assert(navigation.speed_source == TOPSPEED_GPS_INS_SPEED_ENCODER);
+        assert(fabsf(navigation.position_m.x) < 0.01f);
+        assert(nearly_equal(navigation.position_m.y, 2.0f, 0.02f));
+
+        /*
+         * 再施加 Z 轴角速度，确认三个后端不是只返回单位四元数。
+         * Fusion 启动阶段会主动把无磁力计航向归零，因此运行到启动期结束后再判断。
+         */
+        imu963ra_gyro_z = 90;
+        for(tick = 0U; tick < 700U; ++tick)
+        {
+            TopSpeed_GPS_INS_PortEncoderSpeedUpdate(0.0f);
+            TopSpeed_GPS_INS_Port5msCallback();
+        }
+        TopSpeed_GPS_INS_PortGetIMUOutput(&imu);
+        assert(imu.valid == 1U);
+        assert(fabsf(imu.raw_yaw_deg) > 20.0f);
+        imu963ra_gyro_z = 0;
+
+        /* 转向后的航向必须真正参与坐标递推，而不只是用于屏幕显示。 */
+        TopSpeed_GPS_INS_PortGetOutput(&navigation);
+        position_x_before_turn_drive = navigation.position_m.x;
+        for(tick = 0U; tick < 200U; ++tick)
+        {
+            TopSpeed_GPS_INS_PortEncoderSpeedUpdate(1.0f);
+            TopSpeed_GPS_INS_Port5msCallback();
+        }
+        TopSpeed_GPS_INS_PortGetOutput(&navigation);
+        assert(fabsf(navigation.position_m.x - position_x_before_turn_drive) >
+               0.2f);
+    }
+
+    assert(TopSpeed_GPS_INS_PortInit(1U,
+                                    NAVIGATION_SOLUTION_GPS_INS) == 0U);
+    assert(g_gnss_init_count == 1U);
+    TopSpeed_GPS_INS_PortGetGPSOutput(&gps);
+    assert(gps.enabled == 1U);
+
+    gnss.latitude = 30.123456;
+    gnss.longitude = 106.654321;
+    gnss.ns = 'N';
+    gnss.ew = 'E';
+    gnss.speed = 7.2f;
+    gnss.direction = 123.4f;
+    gnss.satellite_used = 12U;
+    gnss.state = 1U;
+    gnss_flag = 1U;
+    TopSpeed_GPS_INS_PortGnssPoll();
+    TopSpeed_GPS_INS_PortEncoderSpeedUpdate(1.25f);
+    TopSpeed_GPS_INS_Port5msCallback();
+
+    TopSpeed_GPS_INS_PortGetGPSOutput(&gps);
+    assert(gps.valid == 1U);
+    assert(gps.satellite_used == 12U);
+    assert(nearly_equal(gps.speed_mps, 2.0f, 0.001f));
+    assert(nearly_equal(gps.direction_deg, 123.4f, 0.001f));
+
+    TopSpeed_GPS_INS_PortGetOutput(&navigation);
+    assert(navigation.encoder_valid == 1U);
+    assert(nearly_equal(navigation.encoder_speed_mps, 1.25f, 0.001f));
+
+    puts("gps_ins_port_test: PASS");
+    return 0;
+}

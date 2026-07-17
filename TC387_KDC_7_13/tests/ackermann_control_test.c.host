@@ -1,0 +1,223 @@
+#include <assert.h>
+#include <math.h>
+#include <stdio.h>
+#include "ackermann_control.h"
+
+typedef struct
+{
+    float motor_speed;
+    float feedforward_pwm;
+} MOTOR_DUTY;
+
+typedef ACKERMANN_PID_GAIN MOTOR_PID_GAIN;
+typedef struct
+{
+    float target_rad_s;
+    float measured_rad_s;
+    float feedforward_pwm;
+    float output_sign;
+    float pwm_limit;
+    uint8_t enabled;
+} MOTOR_REAR_SPEED_INPUT;
+typedef struct
+{
+    float target_rad_s;
+    float measured_rad_s;
+    float error_rad_s;
+    float pwm;
+} MOTOR_REAR_SPEED_STATUS;
+
+MOTOR_DUTY servo_duty;
+static float g_left_pwm;
+static float g_right_pwm;
+static float g_servo_angle;
+static unsigned g_start_count;
+static unsigned g_stop_count;
+static MOTOR_PID_GAIN g_left_gain;
+static MOTOR_PID_GAIN g_right_gain;
+static MOTOR_REAR_SPEED_STATUS g_left_status;
+static MOTOR_REAR_SPEED_STATUS g_right_status;
+
+void motor_init(void) {}
+void Servo_init(void) { g_servo_angle = 100.0f; }
+void Servo_set_position_pid_gain(const ACKERMANN_PID_GAIN *gain) { (void)gain; }
+void Servo_set_angle(float angle_deg)
+{
+    servo_duty.motor_speed = angle_deg;
+}
+void Servo_position_control(MOTOR_DUTY *duty)
+{
+    g_servo_angle = duty->motor_speed;
+}
+void Servo_pid_reset(void) {}
+float Servo_get_angle(void) { return g_servo_angle; }
+void Motor_get_default_pid_gains(ACKERMANN_PID_GAIN *steering_position_gain,
+                                 ACKERMANN_PID_GAIN *left_rear_speed_gain,
+                                 ACKERMANN_PID_GAIN *right_rear_speed_gain)
+{
+    steering_position_gain->kp = 60.0f;
+    steering_position_gain->ki = 1.0f;
+    steering_position_gain->kd = 0.5f;
+    steering_position_gain->integral_limit = 400.0f;
+    steering_position_gain->output_limit = 2000.0f;
+    steering_position_gain->deadband = 0.3f;
+
+    left_rear_speed_gain->kp = 550.0f;
+    left_rear_speed_gain->ki = 120.0f;
+    left_rear_speed_gain->kd = 0.0f;
+    left_rear_speed_gain->integral_limit = 3000.0f;
+    left_rear_speed_gain->output_limit = 8000.0f;
+    left_rear_speed_gain->deadband = 0.05f;
+    *right_rear_speed_gain = *left_rear_speed_gain;
+}
+void Motor_set_rear_speed_pid_gains(const MOTOR_PID_GAIN *left_gain,
+                                    const MOTOR_PID_GAIN *right_gain)
+{
+    if(left_gain != 0) { g_left_gain = *left_gain; }
+    if(right_gain != 0) { g_right_gain = *right_gain; }
+}
+void Motor_get_rear_speed_pid_gains(MOTOR_PID_GAIN *left_gain,
+                                    MOTOR_PID_GAIN *right_gain)
+{
+    if(left_gain != 0) { *left_gain = g_left_gain; }
+    if(right_gain != 0) { *right_gain = g_right_gain; }
+}
+void Motor_rear_speed_pid_reset(void)
+{
+    g_left_status.target_rad_s = 0.0f;
+    g_left_status.measured_rad_s = 0.0f;
+    g_left_status.error_rad_s = 0.0f;
+    g_left_status.pwm = 0.0f;
+    g_right_status = g_left_status;
+}
+static float mock_rear_control(const MOTOR_REAR_SPEED_INPUT *input,
+                               MOTOR_REAR_SPEED_STATUS *status)
+{
+    float pwm;
+    status->target_rad_s = input->target_rad_s;
+    status->measured_rad_s = input->measured_rad_s;
+    status->error_rad_s = input->target_rad_s - input->measured_rad_s;
+    if(input->enabled == 0U)
+    {
+        status->pwm = 0.0f;
+        return 0.0f;
+    }
+    pwm = status->error_rad_s + input->feedforward_pwm;
+    status->pwm = pwm * ((input->output_sign < 0.0f) ? -1.0f : 1.0f);
+    return status->pwm;
+}
+void Motor_rear_speed_control(const MOTOR_REAR_SPEED_INPUT *left,
+                              const MOTOR_REAR_SPEED_INPUT *right,
+                              uint8_t allow_active_braking)
+{
+    (void)allow_active_braking;
+    g_left_pwm = mock_rear_control(left, &g_left_status);
+    g_right_pwm = mock_rear_control(right, &g_right_status);
+}
+void Motor_get_rear_speed_status(MOTOR_REAR_SPEED_STATUS *left_status,
+                                 MOTOR_REAR_SPEED_STATUS *right_status)
+{
+    if(left_status != 0) { *left_status = g_left_status; }
+    if(right_status != 0) { *right_status = g_right_status; }
+}
+void Motor_set_pwm(float left_pwm, float right_pwm)
+{
+    g_left_pwm = left_pwm;
+    g_right_pwm = right_pwm;
+}
+void Motor_stop_all(void)
+{
+    g_left_pwm = 0.0f;
+    g_right_pwm = 0.0f;
+    ++g_stop_count;
+}
+void start(void) { ++g_start_count; }
+
+static int nearly_equal(float a, float b, float tolerance)
+{
+    return fabsf(a - b) <= tolerance;
+}
+
+int main(void)
+{
+    ACKERMANN_CONTROL_CONFIG config;
+    ACKERMANN_CONTROL_TELEMETRY telemetry;
+    float left_speed;
+    float right_speed;
+    float steering;
+    int i;
+
+    Ackermann_get_default_config(&config);
+    assert(nearly_equal(config.wheelbase_m, 0.8f, 1.0e-6f));
+    assert(nearly_equal(config.track_width_m, 1.0f, 1.0e-6f));
+    assert(nearly_equal(config.wheel_radius_m, 0.2f, 1.0e-6f));
+
+    steering = Ackermann_stanley_steering(0.0f, 0.0f, 1.0f, &config);
+    assert(nearly_equal(steering, 0.0f, 1.0e-6f));
+    steering = Ackermann_stanley_steering(1.0f, 0.0f, 1.0f, &config);
+    assert(steering > 0.0f);
+    assert(steering <= config.max_steering_angle_rad);
+
+    Ackermann_electronic_differential(2.0f,
+                                      10.0f * ACKERMANN_DEG_TO_RAD,
+                                      &config,
+                                      &left_speed,
+                                      &right_speed);
+    assert(left_speed < 2.0f);
+    assert(right_speed > 2.0f);
+    assert(nearly_equal((left_speed + right_speed) * 0.5f, 2.0f, 1.0e-5f));
+
+    config.steering_center_encoder_deg = -1.0f;
+    assert(Ackermann_control_init(&config) == 0U);
+    assert(g_stop_count == 1U);
+    Ackermann_control_enable(1U);
+    Ackermann_control_enable(1U);
+    assert(g_start_count == 1U);
+
+    Ackermann_set_path_error(0.0f, 0.0f, 1.0f);
+    for(i = 0; i < 10; ++i)
+    {
+        Ackermann_control_step(0, 0, 1U);
+    }
+    Ackermann_get_telemetry(&telemetry);
+    assert(telemetry.left_target_rad_s > 0.0f);
+    assert(nearly_equal(telemetry.left_target_rad_s,
+                        telemetry.right_target_rad_s,
+                        1.0e-5f));
+    assert(g_left_pwm > 0.0f);
+    assert(g_right_pwm > 0.0f);
+
+    Ackermann_set_path_error(0.2f, 0.0f, 1.0f);
+    Ackermann_control_step(0, 0, 1U);
+    Ackermann_get_telemetry(&telemetry);
+    assert(telemetry.steering_target_rad > 0.0f);
+    assert(telemetry.left_target_rad_s < telemetry.right_target_rad_s);
+    assert(telemetry.steering_encoder_target_deg > 100.0f);
+
+    Ackermann_control_step(0, 0, 0U);
+    assert(nearly_equal(g_left_pwm, 0.0f, 1.0e-6f));
+    assert(nearly_equal(g_right_pwm, 0.0f, 1.0e-6f));
+
+    for(i = 0; i < 50; ++i)
+    {
+        Ackermann_control_step(0, 0, 1U);
+    }
+    Ackermann_get_telemetry(&telemetry);
+    assert(telemetry.command_timed_out != 0U);
+    assert(nearly_equal(g_left_pwm, 0.0f, 1.0e-6f));
+    assert(nearly_equal(g_right_pwm, 0.0f, 1.0e-6f));
+
+    Ackermann_control_enable(0U);
+    assert(g_stop_count == 2U);
+
+    /* Motor-test telemetry must remain available with path control disabled. */
+    Ackermann_control_step(10.0f, -8.0f, 1U);
+    Ackermann_get_telemetry(&telemetry);
+    /* Ackermann PID consumes encoder.c angular speed directly, without
+     * another count conversion or low-pass stage. */
+    assert(nearly_equal(telemetry.left_measured_rad_s, 10.0f, 1.0e-6f));
+    assert(nearly_equal(telemetry.right_measured_rad_s, -8.0f, 1.0e-6f));
+    assert(telemetry.enabled == 0U);
+    puts("ackermann_control_test: PASS");
+    return 0;
+}

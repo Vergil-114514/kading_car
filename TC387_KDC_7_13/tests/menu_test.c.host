@@ -1,0 +1,424 @@
+#include <assert.h>
+#include <stdio.h>
+#include <string.h>
+
+#include "menu_host_stubs.h"
+#include "Menu.h"
+#include "GPS_INS/TopSpeed_GPS_INS_Port.h"
+#include "test_mode.h"
+#include "remote_mode.h"
+
+MOTOR_DUTY servo_duty;
+MOTOR_PID servo_position_pid;
+
+static uint8_t g_p33_4 = 1U;
+static uint8_t g_p33_5 = 1U;
+static float g_left_pwm;
+static float g_right_pwm;
+static float g_servo_angle = 90.0f;
+static uint8_t g_left_enable;
+static uint8_t g_right_enable;
+static uint8_t g_steer_enable;
+static unsigned g_stop_count;
+static unsigned g_test_enter_count;
+static ACKERMANN_PID_GAIN g_left_gain;
+static ACKERMANN_PID_GAIN g_right_gain;
+static MOTOR_REAR_SPEED_STATUS g_left_motor_status;
+static MOTOR_REAR_SPEED_STATUS g_right_motor_status;
+static ACKERMANN_CONTROL_TELEMETRY g_telemetry;
+static lora3a22_uart_transfer_dat_struct g_next_frame;
+static uint8_t g_frame_ready;
+static uint32 g_frame_sequence;
+static char g_screen[MENU_ROW_COUNT][MENU_COLUMN_COUNT + 1U];
+static TopSpeed_GPS_INS_Output g_navigation;
+static TopSpeed_GPS_INS_IMU_Output g_imu;
+static TopSpeed_GPS_INS_GPS_Output g_gps;
+
+void Ackermann_control_enable(uint8_t enable) { (void)enable; }
+void Ackermann_get_default_config(ACKERMANN_CONTROL_CONFIG *config)
+{
+    memset(config, 0, sizeof(*config));
+    config->wheelbase_m = 0.8f;
+    config->track_width_m = 1.0f;
+    config->wheel_radius_m = 0.2f;
+    config->left_motor_sign = 1.0f;
+    config->right_motor_sign = 1.0f;
+    config->steering_position_pid.kp = 60.0f;
+    config->steering_position_pid.ki = 1.0f;
+    config->steering_position_pid.kd = 0.5f;
+    config->steering_position_pid.integral_limit = 400.0f;
+    config->steering_position_pid.output_limit = 2000.0f;
+    config->steering_position_pid.deadband = 0.3f;
+    config->left_speed_pid.kp = 550.0f;
+    config->left_speed_pid.ki = 120.0f;
+    config->left_speed_pid.integral_limit = 2000.0f;
+    config->left_speed_pid.output_limit = 2000.0f;
+    config->left_speed_pid.deadband = 0.05f;
+    config->right_speed_pid = config->left_speed_pid;
+    g_left_gain = config->left_speed_pid;
+    g_right_gain = config->right_speed_pid;
+}
+void Ackermann_get_telemetry(ACKERMANN_CONTROL_TELEMETRY *telemetry)
+{
+    *telemetry = g_telemetry;
+}
+float Ackermann_get_steering_center(void) { return 90.0f; }
+void Ackermann_electronic_differential(float center_speed_mps,
+                                       float steering_angle_rad,
+                                       const ACKERMANN_CONTROL_CONFIG *config,
+                                       float *left_speed_mps,
+                                       float *right_speed_mps)
+{
+    float correction = center_speed_mps * steering_angle_rad
+                     * config->track_width_m / (2.0f * config->wheelbase_m);
+    *left_speed_mps = center_speed_mps - correction;
+    *right_speed_mps = center_speed_mps + correction;
+}
+void Ackermann_set_rear_speed_pid_gains(const ACKERMANN_PID_GAIN *left_gain,
+                                        const ACKERMANN_PID_GAIN *right_gain)
+{
+    if(left_gain != 0) { g_left_gain = *left_gain; }
+    if(right_gain != 0) { g_right_gain = *right_gain; }
+}
+void Ackermann_get_rear_speed_pid_gains(ACKERMANN_PID_GAIN *left_gain,
+                                        ACKERMANN_PID_GAIN *right_gain)
+{
+    if(left_gain != 0) { *left_gain = g_left_gain; }
+    if(right_gain != 0) { *right_gain = g_right_gain; }
+}
+
+void Motor_set_pwm(float left_pwm, float right_pwm)
+{
+    g_left_pwm = left_pwm;
+    g_right_pwm = right_pwm;
+}
+void Motor_set_rear_speed_pid_gains(const MOTOR_PID_GAIN *left_gain,
+                                    const MOTOR_PID_GAIN *right_gain)
+{
+    if(left_gain != 0) { g_left_gain = *left_gain; }
+    if(right_gain != 0) { g_right_gain = *right_gain; }
+}
+void Motor_get_rear_speed_pid_gains(MOTOR_PID_GAIN *left_gain,
+                                    MOTOR_PID_GAIN *right_gain)
+{
+    if(left_gain != 0) { *left_gain = g_left_gain; }
+    if(right_gain != 0) { *right_gain = g_right_gain; }
+}
+void Motor_rear_speed_pid_reset(void)
+{
+    memset(&g_left_motor_status, 0, sizeof(g_left_motor_status));
+    memset(&g_right_motor_status, 0, sizeof(g_right_motor_status));
+}
+static float mock_motor_rear_update(const MOTOR_REAR_SPEED_INPUT *input,
+                                    const MOTOR_PID_GAIN *gain,
+                                    MOTOR_REAR_SPEED_STATUS *status,
+                                    uint8_t allow_active_braking)
+{
+    float pwm;
+    if(input == 0)
+    {
+        memset(status, 0, sizeof(*status));
+        return 0.0f;
+    }
+    status->target_rad_s = input->target_rad_s;
+    status->measured_rad_s = input->measured_rad_s;
+    status->error_rad_s = input->target_rad_s - input->measured_rad_s;
+    if(input->enabled == 0U)
+    {
+        status->pwm = 0.0f;
+        return 0.0f;
+    }
+    pwm = gain->kp * status->error_rad_s + input->feedforward_pwm;
+    if((input->pwm_limit > 0.0f) && (pwm > input->pwm_limit))
+    {
+        pwm = input->pwm_limit;
+    }
+    if((input->pwm_limit > 0.0f) && (pwm < -input->pwm_limit))
+    {
+        pwm = -input->pwm_limit;
+    }
+    if((allow_active_braking == 0U)
+    && (((input->target_rad_s > 0.0f) && (pwm < 0.0f))
+     || ((input->target_rad_s < 0.0f) && (pwm > 0.0f))))
+    {
+        pwm = 0.0f;
+    }
+    status->pwm = pwm * ((input->output_sign < 0.0f) ? -1.0f : 1.0f);
+    return status->pwm;
+}
+void Motor_rear_speed_control(const MOTOR_REAR_SPEED_INPUT *left,
+                              const MOTOR_REAR_SPEED_INPUT *right,
+                              uint8_t allow_active_braking)
+{
+    g_left_pwm = mock_motor_rear_update(left, &g_left_gain,
+                                        &g_left_motor_status,
+                                        allow_active_braking);
+    g_right_pwm = mock_motor_rear_update(right, &g_right_gain,
+                                         &g_right_motor_status,
+                                         allow_active_braking);
+}
+void Motor_get_rear_speed_status(MOTOR_REAR_SPEED_STATUS *left_status,
+                                 MOTOR_REAR_SPEED_STATUS *right_status)
+{
+    if(left_status != 0) { *left_status = g_left_motor_status; }
+    if(right_status != 0) { *right_status = g_right_motor_status; }
+}
+void Motor_enable_channels(uint8_t left, uint8_t right, uint8_t steering)
+{
+    g_left_enable = left;
+    g_right_enable = right;
+    g_steer_enable = steering;
+}
+void Motor_stop_all(void)
+{
+    g_left_pwm = 0.0f;
+    g_right_pwm = 0.0f;
+    g_left_enable = 0U;
+    g_right_enable = 0U;
+    g_steer_enable = 0U;
+    ++g_stop_count;
+}
+void Servo_pid_reset(void) { servo_position_pid.state.output = 0.0f; }
+void Servo_set_position_pid_gain(const MOTOR_PID_GAIN *gain)
+{
+    servo_position_pid.gain = *gain;
+}
+void Servo_set_angle(float angle_deg) { servo_duty.motor_speed = angle_deg; }
+void Servo_position_control(MOTOR_DUTY *duty)
+{
+    float error = duty->motor_speed - g_servo_angle;
+    servo_position_pid.state.output = error * servo_position_pid.gain.kp;
+    g_servo_angle += error * 0.1f;
+}
+float Servo_get_angle(void) { return g_servo_angle; }
+
+uint8_t lora3a22_get_snapshot(lora3a22_uart_transfer_dat_struct *snapshot,
+                              uint32 *sequence)
+{
+    if(g_frame_ready == 0U)
+    {
+        return 0U;
+    }
+    *snapshot = g_next_frame;
+    if(sequence != 0) { *sequence = g_frame_sequence; }
+    g_frame_ready = 0U;
+    return 1U;
+}
+void lora3a22_init(void) {}
+void lora3a22_5ms_callback(void) {}
+
+void TopSpeed_GPS_INS_PortGetOutput(TopSpeed_GPS_INS_Output *output)
+{
+    *output = g_navigation;
+}
+void TopSpeed_GPS_INS_PortGetIMUOutput(TopSpeed_GPS_INS_IMU_Output *output)
+{
+    *output = g_imu;
+}
+void TopSpeed_GPS_INS_PortGetGPSOutput(TopSpeed_GPS_INS_GPS_Output *output)
+{
+    *output = g_gps;
+}
+const char *TopSpeed_GPS_INS_PortGetNavigationSolutionName(void)
+{
+    return "GPS_INS";
+}
+
+void gpio_init(int pin, int dir, uint8_t level, int mode)
+{
+    (void)pin; (void)dir; (void)level; (void)mode;
+}
+uint8_t gpio_get_level(int pin) { return (pin == P33_4) ? g_p33_4 : g_p33_5; }
+void ips200_init(int type) { (void)type; }
+void ips200_set_dir(int dir) { (void)dir; }
+void ips200_set_font(int font) { (void)font; }
+void ips200_set_color(uint16_t pen, uint16_t background)
+{ (void)pen; (void)background; }
+void ips200_clear(void)
+{
+    uint8_t row;
+    for(row = 0U; row < MENU_ROW_COUNT; ++row)
+    {
+        memset(g_screen[row], ' ', MENU_COLUMN_COUNT);
+        g_screen[row][MENU_COLUMN_COUNT] = '\0';
+    }
+}
+void ips200_show_string(uint16_t x, uint16_t y, const char text[])
+{
+    uint16_t row = y / MENU_FONT_HEIGHT;
+    uint16_t column = x / MENU_FONT_WIDTH;
+
+    if((row >= MENU_ROW_COUNT) || (column >= MENU_COLUMN_COUNT)) { return; }
+    while((*text != '\0') && (column < MENU_COLUMN_COUNT))
+    {
+        g_screen[row][column++] = *text++;
+    }
+}
+void ips200_show_int(uint16_t x, uint16_t y, int32_t value, uint8_t digits)
+{ (void)x; (void)y; (void)value; (void)digits; }
+void ips200_show_uint(uint16_t x, uint16_t y, uint32_t value, uint8_t digits)
+{ (void)x; (void)y; (void)value; (void)digits; }
+void ips200_show_float(uint16_t x, uint16_t y, double value,
+                       uint8_t digits, uint8_t decimals)
+{ (void)x; (void)y; (void)value; (void)digits; (void)decimals; }
+
+static void test_mode_enter(void) { ++g_test_enter_count; }
+
+static void change_board_pins_during_runtime(uint8_t p33_5, uint8_t p33_4)
+{
+    unsigned i;
+    g_p33_5 = p33_5;
+    g_p33_4 = p33_4;
+    /* Runtime samples must not change the mode latched by Menu_init(). */
+    for(i = 0U; i < 4U; ++i) { Control_5msCallback(); }
+    Menu_Task();
+}
+
+static void send_remote_frame(uint8_t active_switch,
+                              int16_t steer,
+                              int16_t throttle,
+                              int8_t pressed_key)
+{
+    memset(&g_next_frame, 0, sizeof(g_next_frame));
+    g_next_frame.head = 0xA3U;
+    g_next_frame.joystick[0] = steer;
+    g_next_frame.joystick[1] = throttle;
+    if(active_switch < 4U) { g_next_frame.switch_key[active_switch] = 1U; }
+    if((pressed_key >= 0) && (pressed_key < 4))
+    {
+        g_next_frame.key[(uint8_t)pressed_key] = 1U;
+    }
+    ++g_frame_sequence;
+    g_frame_ready = 1U;
+    Menu_Task();
+}
+
+static void advance_startup_page(void)
+{
+    unsigned ticks = MENU_STARTUP_PAGE_HOLD_MS / 100U;
+    unsigned index;
+
+    for(index = 0U; index < ticks; ++index) { Menu_100msTask(); }
+    Menu_Task();
+    Menu_Display();
+}
+
+int main(void)
+{
+    MenuModeHooks_t hooks = {test_mode_enter, 0, 0};
+    MenuPeripheralStatus_t init_status = {1U, 1U, 1U, 1U,
+                                           1U, 1U, 0U, 0U};
+    TestModeStatus_t status;
+    RemoteModeStatus_t remote_status;
+    ACKERMANN_PID_GAIN before;
+    ACKERMANN_PID_GAIN after;
+    unsigned i;
+
+    Menu_RegisterModeHooks(CAR_MODE_TEST, &hooks);
+    /* Boot with S6=10 (P33.5 active, P33.4 inactive): TEST mode. */
+    g_p33_5 = 0U;
+    g_p33_4 = 1U;
+    g_navigation.initialized = 1U;
+    g_navigation.valid = 1U;
+    g_navigation.position_m.x = 12.5f;
+    g_navigation.position_m.y = -3.0f;
+    g_navigation.speed_source = TOPSPEED_GPS_INS_SPEED_ENCODER;
+    g_gps.enabled = 1U;
+    Menu_SetPeripheralInitStatus(&init_status);
+    Menu_init();
+    Menu_Task();
+    Menu_Display();
+    assert(Menu_GetMode() == CAR_MODE_TEST);
+    assert(g_test_enter_count == 1U);
+    assert(g_screen[MENU_CURSOR_ROW][0] == '-');
+    assert(g_screen[MENU_CURSOR_ROW][1] == '>');
+    assert(strstr(g_screen[MENU_CURSOR_ROW], "SYSTEM / INS STATUS") != 0);
+    assert(strstr(g_screen[8], "TEST") != 0);
+    assert(strstr(g_screen[9], "GPS_INS") != 0);
+
+    advance_startup_page();
+    assert(strstr(g_screen[MENU_CURSOR_ROW], "MOTOR PID TEST") != 0);
+    assert(strstr(g_screen[2], "LOST") != 0);
+
+    /* Changing S6 to 11 after initialization must be ignored. */
+    change_board_pins_during_runtime(0U, 0U);
+    assert(Menu_GetMode() == CAR_MODE_TEST);
+
+    Control_5msCallback();
+    TestMode_GetStatus(&status);
+    assert(status.lora_link_ok == 0U);
+    assert(g_left_enable == 0U && g_right_enable == 0U && g_steer_enable == 0U);
+
+    send_remote_frame(0U, 1900, 0, -1);
+    Control_5msCallback();
+    assert(TestMode_GetChannel() == TEST_MODE_CHANNEL_STEERING);
+    assert(g_left_enable == 0U && g_right_enable == 0U && g_steer_enable == 1U);
+    TestMode_GetStatus(&status);
+    assert(status.steering_target_deg == 110.0f);
+
+    assert(TestMode_GetPidGains(TEST_MODE_CHANNEL_STEERING, &before) == 0U);
+    send_remote_frame(0U, 0, 0, 0);
+    Control_5msCallback();
+    TestMode_GetStatus(&status);
+    assert(status.selected_term == TEST_MODE_PID_KI);
+    send_remote_frame(0U, 0, 0, -1);
+    Control_5msCallback();
+    send_remote_frame(0U, 0, 0, 3);
+    Control_5msCallback();
+    assert(TestMode_GetPidGains(TEST_MODE_CHANNEL_STEERING, &after) == 0U);
+    assert(after.ki > before.ki);
+
+    memset(&g_next_frame, 0, sizeof(g_next_frame));
+    g_next_frame.switch_key[0] = 1U;
+    g_next_frame.switch_key[1] = 1U;
+    ++g_frame_sequence;
+    g_frame_ready = 1U;
+    Menu_Task();
+    Control_5msCallback();
+    assert(TestMode_GetChannel() == TEST_MODE_CHANNEL_SWITCH_CONFLICT);
+    assert(g_left_enable == 0U && g_right_enable == 0U && g_steer_enable == 0U);
+
+    send_remote_frame(1U, 0, 1900, -1);
+    Control_5msCallback();
+    assert(TestMode_GetChannel() == TEST_MODE_CHANNEL_LEFT_REAR);
+    assert(g_left_enable == 1U && g_right_enable == 0U && g_steer_enable == 0U);
+    assert(g_left_pwm > 0.0f && g_right_pwm == 0.0f);
+
+    for(i = 0U; i < 61U; ++i) { Control_5msCallback(); }
+    TestMode_GetStatus(&status);
+    assert(status.lora_link_ok == 0U);
+    assert(g_left_enable == 0U && g_right_enable == 0U && g_steer_enable == 0U);
+
+    send_remote_frame(3U, 950, 1520, -1);
+    Control_5msCallback();
+    assert(TestMode_GetChannel() == TEST_MODE_CHANNEL_DRIVE);
+    assert(g_left_enable == 1U && g_right_enable == 1U && g_steer_enable == 1U);
+
+    /* Simulate a reset with S6=11; only the new initialization reads it. */
+    g_p33_5 = 0U;
+    g_p33_4 = 0U;
+    Menu_init();
+    Menu_Task();
+    Menu_Display();
+    assert(Menu_GetMode() == CAR_MODE_REMOTE);
+    assert(strstr(g_screen[MENU_CURSOR_ROW], "SYSTEM / INS STATUS") != 0);
+    advance_startup_page();
+    assert(strstr(g_screen[MENU_CURSOR_ROW], "REMOTE DATA / PAGE 2") != 0);
+    /* Board REMOTE mode is independent from transmitter test switches. */
+    send_remote_frame(4U, 950, 1900, -1);
+    Control_5msCallback();
+    assert(g_left_enable == 1U && g_right_enable == 1U && g_steer_enable == 1U);
+    assert(g_left_pwm == 8000.0f && g_right_pwm == 8000.0f);
+    RemoteMode_GetStatus(&remote_status);
+    assert(remote_status.throttle_input == 1.0f);
+    assert(remote_status.left_target_rad_s == 0.0f);
+
+    /* 遥控后轮为开环：反向满量程直接映射为 -8000。 */
+    send_remote_frame(4U, 0, -1900, -1);
+    Control_5msCallback();
+    assert(g_left_pwm == -8000.0f && g_right_pwm == -8000.0f);
+    assert(g_stop_count > 0U);
+
+    puts("menu_lora_pid_test: PASS");
+    return 0;
+}

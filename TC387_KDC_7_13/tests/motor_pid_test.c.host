@@ -1,0 +1,79 @@
+#include <assert.h>
+#include <math.h>
+#include <stdio.h>
+
+#include "motor_host_stubs.h"
+
+float car_speed[3];
+float car_angle;
+
+void pwm_hl_init(pwm_channel_enum top, pwm_channel_enum bottom,
+                 uint32 frequency, uint32 duty)
+{
+    (void)top; (void)bottom; (void)frequency; (void)duty;
+}
+void pwm_hl_set_duty(pwm_channel_enum top, uint32 duty)
+{
+    (void)top; (void)duty;
+}
+void gpio_init(gpio_pin_enum pin, int direction, uint8 level, int mode)
+{
+    (void)pin; (void)direction; (void)level; (void)mode;
+}
+void gpio_set_level(gpio_pin_enum pin, uint8 level)
+{
+    (void)pin; (void)level;
+}
+
+static int nearly_equal(float a, float b)
+{
+    return fabsf(a - b) < 1.0e-5f;
+}
+
+int main(void)
+{
+    MOTOR_PID_GAIN left_gain = {100.0f, 0.0f, 0.0f, 0.0f, 500.0f, 0.0f};
+    MOTOR_PID_GAIN right_gain = {100.0f, 0.0f, 0.0f, 0.0f, 500.0f, 0.0f};
+    MOTOR_PID_GAIN read_left;
+    MOTOR_PID_GAIN read_right;
+    MOTOR_REAR_SPEED_INPUT left = {2.0f, 1.0f, 0.0f, 1.0f, 300.0f, 1U};
+    MOTOR_REAR_SPEED_INPUT right = {2.0f, 0.0f, 0.0f, -1.0f, 300.0f, 1U};
+    MOTOR_REAR_SPEED_STATUS left_status;
+    MOTOR_REAR_SPEED_STATUS right_status;
+
+    motor_init();
+    Motor_set_rear_speed_pid_gains(&left_gain, &right_gain);
+    Motor_get_rear_speed_pid_gains(&read_left, &read_right);
+    assert(nearly_equal(read_left.kp, 100.0f));
+    assert(nearly_equal(read_right.output_limit, 500.0f));
+
+    Motor_rear_speed_control(&left, &right, 0U);
+    Motor_get_rear_speed_status(&left_status, &right_status);
+    assert(nearly_equal(left_status.error_rad_s, 1.0f));
+    assert(nearly_equal(left_status.pwm, 100.0f));
+    assert(nearly_equal(right_status.pwm, -200.0f));
+
+    /* 本次运行限幅必须小于 PID 参数上限时仍然生效。 */
+    left.target_rad_s = 10.0f;
+    left.measured_rad_s = 0.0f;
+    Motor_rear_speed_control(&left, &right, 0U);
+    Motor_get_rear_speed_status(&left_status, 0);
+    assert(nearly_equal(left_status.pwm, 300.0f));
+
+    /* 禁止主动制动时，正目标下的负 PWM 应被钳为 0。 */
+    left.target_rad_s = 1.0f;
+    left.measured_rad_s = 3.0f;
+    Motor_rear_speed_control(&left, &right, 0U);
+    Motor_get_rear_speed_status(&left_status, 0);
+    assert(nearly_equal(left_status.pwm, 0.0f));
+
+    left.enabled = 0U;
+    right.enabled = 0U;
+    Motor_rear_speed_control(&left, &right, 0U);
+    Motor_get_rear_speed_status(&left_status, &right_status);
+    assert(nearly_equal(left_status.pwm, 0.0f));
+    assert(nearly_equal(right_status.pwm, 0.0f));
+
+    puts("motor_pid_test: PASS");
+    return 0;
+}
