@@ -1,0 +1,70 @@
+#include <assert.h>
+#include <stdio.h>
+#include "subject2_command.h"
+#include "subject2_protocol.h"
+
+int main(void)
+{
+    SUBJECT2_COMMAND_STATE state;
+    SUBJECT2_OUTPUT_STATE output;
+    uint8_t header[SUBJECT2_WAV_HEADER_SIZE];
+    uint8_t command_code = 0U;
+    static const uint8_t response[] =
+        "{\"status\":\"ok\",\"command_code\":17,\"is_known_command\":true}";
+    static const uint8_t no_command[] = "{\"status\":\"ok\"}";
+
+    assert(Subject2_protocol_build_wav_header(header, 64000U) == 1U);
+    assert(header[0] == 'R');
+    assert(header[8] == 'W');
+    assert(header[24] == 0x80U);
+    assert(header[25] == 0x3EU);
+    assert(header[40] == 0x00U);
+    assert(header[41] == 0xFAU);
+    assert(Subject2_protocol_parse_command_code(response,
+                                                (uint16_t)(sizeof(response) - 1U),
+                                                &command_code) == 1U);
+    assert(command_code == SUBJECT2_COMMAND_HORN_ALARM);
+    assert(Subject2_protocol_parse_command_code(no_command,
+                                                (uint16_t)(sizeof(no_command) - 1U),
+                                                &command_code) == 0U);
+
+    Subject2_command_init(&state);
+    assert(Subject2_command_dispatch(&state, SUBJECT2_COMMAND_LEFT_INDICATOR) == 1U);
+    Subject2_command_get_output(&state, &output);
+    assert(output.left_indicator_on == 1U);
+    assert(output.right_indicator_on == 0U);
+    Subject2_command_tick(&state, 500U);
+    Subject2_command_get_output(&state, &output);
+    assert(output.left_indicator_on == 0U);
+
+    assert(Subject2_command_dispatch(&state, SUBJECT2_COMMAND_HAZARD_LIGHT) == 1U);
+    Subject2_command_tick(&state, 500U);
+    Subject2_command_get_output(&state, &output);
+    assert(output.left_indicator_on == 1U);
+    assert(output.right_indicator_on == 1U);
+
+    assert(Subject2_command_dispatch(&state, SUBJECT2_COMMAND_HORN_TWO_BEEPS) == 1U);
+    Subject2_command_get_output(&state, &output);
+    assert(output.horn_on == 1U);
+    assert(output.horn_frequency_hz == 1000U);
+    Subject2_command_tick(&state, 1000U);
+    Subject2_command_get_output(&state, &output);
+    assert(output.horn_on == 0U);
+    Subject2_command_tick(&state, 1000U);
+    Subject2_command_get_output(&state, &output);
+    assert(output.horn_on == 1U);
+    Subject2_command_tick(&state, 1000U);
+    Subject2_command_get_output(&state, &output);
+    assert(output.horn_on == 0U);
+
+    assert(Subject2_command_dispatch(&state, SUBJECT2_COMMAND_HORN_ALARM) == 1U);
+    Subject2_command_get_output(&state, &output);
+    assert(output.horn_frequency_hz == 500U);
+    Subject2_command_tick(&state, 1000U);
+    Subject2_command_get_output(&state, &output);
+    assert(output.horn_frequency_hz == 1000U);
+    assert(Subject2_command_dispatch(&state, SUBJECT2_COMMAND_CODE_MAX + 1U) == 0U);
+
+    puts("subject2_command_test: PASS");
+    return 0;
+}

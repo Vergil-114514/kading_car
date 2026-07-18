@@ -1,4 +1,5 @@
 #include "zf_common_headfile.h"
+#include "subject2_voice.h"
 
 /**
  * @brief CPU0 外设初始化。
@@ -69,5 +70,5 @@ void CPU2_Peripheral_Init(void)
  */
 void CPU3_Peripheral_Init(void)
 {
-    /* TODO：在这里加入 CPU3 的语音模块、灯板等外设初始化。 */
+    Subject2_voice_init();
 }

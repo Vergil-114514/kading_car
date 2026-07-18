@@ -2,27 +2,31 @@
 
 ## Project Structure & Module Organization
 
-The TC387 firmware project is `TC387_KDC_7_13/`. Put application and
-board-control code in `code/`, CPU entry points and ISRs in `user/`, and host
-tests and stubs in `tests/`. `libraries/` is Seekfree and Infineon iLLD vendor
-support; change it only deliberately and document why. `Debug/` is generated
-build output; the linker layout is `Lcf_Tasking_Tricore_Tc.lsl`.
+Firmware is `TC387_KDC_7_13/`: application and board-control code in `code/`,
+CPU entry points and ISRs in `user/`, and host tests and stubs in `tests/`.
+`libraries/` is vendor support; change it deliberately. `Debug/` is generated
+output; linker layout is `Lcf_Tasking_Tricore_Tc.lsl`.
 
 ## Working Method
 
-Before coding, state assumptions and material tradeoffs. Present viable
-interpretations rather than silently choosing; if local context cannot resolve
-ambiguity, stop and ask. Call out simpler alternatives and push back when
-warranted. Favor the smallest solution: no unrequested features, configuration,
-single-use abstractions, or impossible-case handling.
+Before coding, state assumptions and tradeoffs. Present alternatives; ask if
+context cannot resolve ambiguity. Call out simpler alternatives and push back
+when warranted. Favor the smallest solution: no
+unrequested features, configuration, single-use abstractions, or impossible-case handling.
 
-Make only task-related edits and match local style. Do not reformat, refactor,
+Make task-related edits and match local style. Do not reformat, refactor,
 or delete unrelated code. Remove only unused items created by your changes;
-report existing dead code instead.
+report existing dead code.
 
-For multi-step work, publish a short plan with a verification check per step.
-Define observable success criteria; when practical, add a reproducing test for
-bug or validation work and iterate until checks pass.
+For multi-step work, publish a short plan with verification per step. Define
+observable success criteria; when practical, add a reproducing test and iterate
+until checks pass.
+
+## Change Documentation
+
+After every completed change, update `CHANGELOG.md` before handoff or commit.
+Record its date, type, affected path or module, concise impact, and validation;
+when validation did not run, state why.
 
 ## Build, Test, and Development Commands
 

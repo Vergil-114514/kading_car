@@ -60,6 +60,12 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## 5. Change Documentation
+
+After every completed change, update `CHANGELOG.md` before handoff or commit.
+Record the date, type, affected path or module, concise impact, and validation.
+When validation did not run, state why.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
