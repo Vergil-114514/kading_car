@@ -16,6 +16,11 @@ cut.
 
 ## Unreleased
 
+- 2026-07-18 | Changed | TLD7002 subject-2 glyphs | Replaced the `IJK` and
+  `WXY` character slots with the supplied three-panel interior-light and wiper
+  bitmaps; retained the prior glyphs and display calls as comments | Source
+  glyph check, host syntax check, and `subject2_command_test` passed; AURIX
+  hardware build not run because TASKING/ADS is unavailable
 - 2026-07-18 | Docs | repository rules | Added the mandatory change-log update
   policy and this tracking document | Reviewed locally
 - 2026-07-18 | Added | CPU3 subject-2 voice pipeline | Added AN4 VAD/WAV capture,

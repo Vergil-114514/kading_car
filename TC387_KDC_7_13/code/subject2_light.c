@@ -35,11 +35,13 @@ static const char *subject2_light_symbol(const SUBJECT2_OUTPUT_STATE *output)
     }
     if(output->interior_light_on != 0U)
     {
-        return "I  ";
+        // return "I  ";
+        return "IJK";
     }
     if(output->wiper_on != 0U)
     {
-        return "W  ";
+        // return "W  ";
+        return "WXY";
     }
     return "   ";
 }
