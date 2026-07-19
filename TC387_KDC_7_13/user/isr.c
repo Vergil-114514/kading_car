@@ -34,6 +34,7 @@
 ********************************************************************************************************************/
 
 #include "zf_common_headfile.h"
+#include "subject2_light.h"
 // 对于TC系列默认是不支持中断嵌套的，希望支持中断嵌套需要在中断内使用 interrupt_global_enable(0); 来开启中断嵌套
 // 简单点说实际上进入中断后TC系列的硬件自动调用了 interrupt_global_disable(); 来拒绝响应任何的中断，因此需要我们自己手动调用 interrupt_global_enable(0); 来开启中断的响应。
 volatile uint16 timecnt[TaskNum] = {0};             // ISR 写、主循环读，必须禁止编译器缓存
@@ -104,20 +105,16 @@ IFX_INTERRUPT(exti_ch0_ch4_isr, 0, EXTI_CH0_CH4_INT_PRIO)
 }
 
 // 由于摄像头pclk引脚默认占用了 1通道，用于触发DMA，因此这里不再定义中断函数
-IFX_INTERRUPT(exti_ch1_ch5_isr, 0, EXTI_CH1_CH5_INT_PRIO)
+IFX_INTERRUPT(exti_ch1_ch5_isr, EXTI_CH1_CH5_INT_VECTAB_NUM, EXTI_CH1_CH5_INT_PRIO)
 {
     interrupt_global_enable(0);                     // 开启中断嵌套
 
     if(exti_flag_get(ERU_CH1_REQ10_P14_3))          // 通道1中断
     {
         exti_flag_clear(ERU_CH1_REQ10_P14_3);
-        // 注意: 该外部中断为摄像头PCLK 若已使用摄像头 请不要再添加其他内容
-        // 注意: 该外部中断为摄像头PCLK 若已使用摄像头 请不要再添加其他内容
-        // 注意: 该外部中断为摄像头PCLK 若已使用摄像头 请不要再添加其他内容
-
-
-
-
+#if SUBJECT2_LIGHT_DRIVER_ENABLED
+        Subject2_light_sync_callback();
+#endif
     }
 
     if(exti_flag_get(ERU_CH5_REQ1_P15_8))           // 通道5中断
@@ -264,7 +261,11 @@ IFX_INTERRUPT(uart3_tx_isr, UART3_INT_VECTAB_NUM, UART3_TX_INT_PRIO)
 IFX_INTERRUPT(uart3_rx_isr, UART3_INT_VECTAB_NUM, UART3_RX_INT_PRIO)
 {
     interrupt_global_enable(0);                     // 开启中断嵌套
+#if SUBJECT2_LIGHT_DRIVER_ENABLED
+    Subject2_light_uart_callback();
+#else
     gnss_uart_callback();                           // GNSS串口回调函数
+#endif
 
 
 

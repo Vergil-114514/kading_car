@@ -55,10 +55,11 @@
 #include "zf_common_typedef.h"
 
 
-#define DOT_MATRIX_SCREEN_SYNC_PIN      (ERU_CH7_REQ11_P20_9)   // 使用P20_9接收同步信号
+/* Board3 H2: SR0..SR6 = P20.0, P14.2, P00.8, P33.8, P14.4, P14.5, P14.6. */
+#define DOT_MATRIX_SCREEN_SYNC_PIN      (ERU_CH1_REQ10_P14_3)
 
 #define DOT_MATRIX_SCREEN_SR0_PIN       (P20_0)
-#define DOT_MATRIX_SCREEN_SR1_PIN       (P20_3)
+#define DOT_MATRIX_SCREEN_SR1_PIN       (P14_2)
 #define DOT_MATRIX_SCREEN_SR2_PIN       (P00_8)
 #define DOT_MATRIX_SCREEN_SR3_PIN       (P33_8)                 // 摩托组可以将引脚定义修改为P33_8
 #define DOT_MATRIX_SCREEN_SR4_PIN       (P14_4)

@@ -86,6 +86,7 @@ int core0_main(void)
         lora3a22_init();
     }
 
+
     /*
      * 四核同步后统一启动 PIT：菜单不在中断中运行，ISR 只负责系统节拍、
      * 定位、模式电机控制和 Ackermann 解算。

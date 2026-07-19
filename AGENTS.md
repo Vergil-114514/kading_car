@@ -28,6 +28,13 @@ After every completed change, update `CHANGELOG.md` before handoff or commit.
 Record its date, type, affected path or module, concise impact, and validation;
 when validation did not run, state why.
 
+## Security & Local Configuration
+
+Do not commit WiFi credentials. Copy
+`TC387_KDC_7_13/code/subject2_voice_local_config.h.example` to the ignored
+`subject2_voice_local_config.h` and set local credentials there before a
+hardware build. Do not stage `tmp/` rendered schematic artifacts.
+
 ## Build, Test, and Development Commands
 
 Open `TC387_KDC_7_13` in AURIX Development Studio, select `Debug`, and use

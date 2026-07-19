@@ -2,21 +2,27 @@
 #define SUBJECT2_VOICE_CONFIG_H
 
 #include "subject2_protocol.h"
+#include "subject2_voice_local_config.h"
 
-#define SUBJECT2_AUDIO_CAPTURE_SECONDS       (2U)
-#define SUBJECT2_AUDIO_CAPTURE_SAMPLES       (SUBJECT2_AUDIO_SAMPLE_RATE * SUBJECT2_AUDIO_CAPTURE_SECONDS)
-#define SUBJECT2_AUDIO_PCM_BYTES            (SUBJECT2_AUDIO_CAPTURE_SAMPLES * 2U)
+#define SUBJECT2_AUDIO_MIN_SAMPLES           (SUBJECT2_AUDIO_SAMPLE_RATE * 8U / 10U)
+#define SUBJECT2_AUDIO_MAX_SAMPLES           (SUBJECT2_AUDIO_SAMPLE_RATE * 7U / 2U)
+#define SUBJECT2_AUDIO_MAX_PCM_BYTES        (SUBJECT2_AUDIO_MAX_SAMPLES * 2U)
+#define SUBJECT2_AUDIO_PREROLL_SAMPLES      (SUBJECT2_AUDIO_SAMPLE_RATE / 5U)
+#define SUBJECT2_AUDIO_PREROLL_PCM_BYTES    (SUBJECT2_AUDIO_PREROLL_SAMPLES * 2U)
 
-#define SUBJECT2_VAD_POLL_MS                (2U)
-#define SUBJECT2_VAD_TRIGGER_DELTA          (120U)
-#define SUBJECT2_VAD_REQUIRED_HITS          (3U)
-#define SUBJECT2_VAD_BASELINE_SAMPLES       (64U)
+#define SUBJECT2_VAD_FRAME_SAMPLES          (SUBJECT2_AUDIO_SAMPLE_RATE / 100U)
+#define SUBJECT2_VAD_START_FRAMES           (3U)
+#define SUBJECT2_VAD_SILENCE_FRAMES         (40U)
+#define SUBJECT2_VAD_REARM_FRAMES           (50U)
+#define SUBJECT2_VAD_BASELINE_SAMPLES       (SUBJECT2_AUDIO_SAMPLE_RATE)
+#define SUBJECT2_VAD_NOISE_MULTIPLIER       (3U)
+#define SUBJECT2_VAD_MIN_DELTA              (4U)
+#define SUBJECT2_AGC_TARGET_PEAK            (20000U)
+#define SUBJECT2_AGC_MAX_GAIN               (32U)
 
-#define SUBJECT2_ASR_SERVER_IP              "192.168.137.1"
+#define SUBJECT2_ASR_SERVER_IP              "192.168.179.94"
 #define SUBJECT2_ASR_SERVER_PORT            "9001"
 #define SUBJECT2_WIFI_LOCAL_PORT            "0"
-#define SUBJECT2_WIFI_SSID                  ""
-#define SUBJECT2_WIFI_PASSWORD              ""
 
 #define SUBJECT2_NETWORK_RETRY_MS           (5000U)
 #define SUBJECT2_RESPONSE_TIMEOUT_MS        (15000U)
@@ -25,7 +31,9 @@
 #define SUBJECT2_HORN_PWM_CHANNEL           ATOM0_CH3_P21_5
 #define SUBJECT2_HORN_PWM_DUTY              (5000U)
 
-/* Set to 1 only after H2 pin mapping has been updated in the lamp driver. */
-#define SUBJECT2_LIGHT_DRIVER_ENABLED       (0U)
+/* Board3 H2 uses UART3 and the CH1 external interrupt. */
+#define SUBJECT2_LIGHT_DRIVER_ENABLED       (1U)
+#define SUBJECT2_RUNTIME_TICK_MS            (1U)
+#define SUBJECT2_RUNTIME_TICK_ISR_PRIORITY  (52U)
 
 #endif

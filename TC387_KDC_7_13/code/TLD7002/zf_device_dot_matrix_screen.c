@@ -368,4 +368,6 @@ void dot_matrix_screen_init(void)
     dot_matrix_screen_set_brightness(dot_matrix_screen_brightness);
     // «Âø’œ‘ æ
     dot_matrix_screen_show_string("   ");
+    memcpy((uint8 *)dot_matrix_screen_data_backup, (uint8 *)dot_matrix_screen_data,
+           sizeof(dot_matrix_screen_data_backup));
 }

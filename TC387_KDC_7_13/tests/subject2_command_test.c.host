@@ -9,6 +9,7 @@ int main(void)
     SUBJECT2_OUTPUT_STATE output;
     uint8_t header[SUBJECT2_WAV_HEADER_SIZE];
     uint8_t command_code = 0U;
+    uint16_t tick;
     static const uint8_t response[] =
         "{\"status\":\"ok\",\"command_code\":17,\"is_known_command\":true}";
     static const uint8_t no_command[] = "{\"status\":\"ok\"}";
@@ -42,6 +43,14 @@ int main(void)
     Subject2_command_get_output(&state, &output);
     assert(output.left_indicator_on == 1U);
     assert(output.right_indicator_on == 1U);
+
+    for(tick = 0U; tick < 500U; tick++)
+    {
+        Subject2_command_tick(&state, 1U);
+    }
+    Subject2_command_get_output(&state, &output);
+    assert(output.left_indicator_on == 0U);
+    assert(output.right_indicator_on == 0U);
 
     assert(Subject2_command_dispatch(&state, SUBJECT2_COMMAND_HORN_TWO_BEEPS) == 1U);
     Subject2_command_get_output(&state, &output);

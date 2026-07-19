@@ -4,3 +4,9 @@
 
 # Generated AURIX/TASKING build output
 TC387_KDC_7_13/Debug/
+
+# Machine-specific voice network credentials
+TC387_KDC_7_13/code/subject2_voice_local_config.h
+
+# Rendered schematic inspection artifacts
+tmp/

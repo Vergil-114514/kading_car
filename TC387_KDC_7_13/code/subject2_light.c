@@ -4,6 +4,7 @@
 
 #if SUBJECT2_LIGHT_DRIVER_ENABLED
 #include "zf_device_dot_matrix_screen.h"
+#include "zf_device_tld7002.h"
 #endif
 
 #if SUBJECT2_LIGHT_DRIVER_ENABLED
@@ -82,9 +83,16 @@ void Subject2_light_apply(const SUBJECT2_OUTPUT_STATE *output)
 #endif
 }
 
-void Subject2_light_task(void)
+void Subject2_light_sync_callback(void)
 {
 #if SUBJECT2_LIGHT_DRIVER_ENABLED
     dot_matrix_screen_scan();
+#endif
+}
+
+void Subject2_light_uart_callback(void)
+{
+#if SUBJECT2_LIGHT_DRIVER_ENABLED
+    tld7002_callback();
 #endif
 }

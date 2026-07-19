@@ -20,6 +20,8 @@
 #ifndef _isr_config_h
 #define _isr_config_h
 
+#include "subject2_voice_config.h"
+
 
 
 //======================================================特别注意====================================================
@@ -166,5 +168,16 @@
 #define UART9_INT_VECTAB_NUM         (int)UART9_INT_SERVICE           > 0 ? (int)UART9_INT_SERVICE         - 1 : (int)UART9_INT_SERVICE
 #define UART10_INT_VECTAB_NUM        (int)UART10_INT_SERVICE          > 0 ? (int)UART10_INT_SERVICE        - 1 : (int)UART10_INT_SERVICE
 #define UART11_INT_VECTAB_NUM        (int)UART11_INT_SERVICE          > 0 ? (int)UART11_INT_SERVICE        - 1 : (int)UART11_INT_SERVICE
+
+#if SUBJECT2_LIGHT_DRIVER_ENABLED
+#undef EXTI_CH1_CH5_INT_SERVICE
+#undef EXTI_CH1_CH5_INT_PRIO
+#undef UART3_INT_SERVICE
+#undef UART3_RX_INT_PRIO
+#define EXTI_CH1_CH5_INT_SERVICE IfxSrc_Tos_cpu3   // Board3 H2 SYNC on P14.3
+#define EXTI_CH1_CH5_INT_PRIO   53
+#define UART3_INT_SERVICE       IfxSrc_Tos_cpu3    // Board3 H2 TLD7002 HSLI
+#define UART3_RX_INT_PRIO       54                 // Must preempt the H2 SYNC callback.
+#endif
 
 #endif
