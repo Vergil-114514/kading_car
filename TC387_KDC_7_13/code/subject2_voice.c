@@ -211,6 +211,31 @@ static uint16 subject2_vad_threshold(void)
     return (scaled_floor > offset_floor) ? scaled_floor : offset_floor;
 }
 
+static void subject2_update_noise_floor(uint16 energy)
+{
+    subject2_noise_floor = (uint16)(((uint32)subject2_noise_floor * 31U + energy) / 32U);
+    subject2_status.noise_floor = subject2_noise_floor;
+}
+
+static void subject2_rebase_noise_floor(uint16 energy)
+{
+    uint16 increment;
+
+    if(energy <= subject2_noise_floor)
+    {
+        subject2_update_noise_floor(energy);
+        return;
+    }
+
+    increment = (uint16)((energy - subject2_noise_floor) / 32U);
+    if(increment == 0U)
+    {
+        increment = 1U;
+    }
+    subject2_noise_floor = (uint16)(subject2_noise_floor + increment);
+    subject2_status.noise_floor = subject2_noise_floor;
+}
+
 static void subject2_store_preroll(uint16 sample)
 {
     subject2_preroll_buffer[subject2_preroll_write_index * 2U] =
@@ -267,15 +292,10 @@ static void subject2_process_listening_frame(uint16 energy)
 {
     uint16 threshold;
 
-    threshold = subject2_vad_threshold();
-    if(energy <= threshold)
-    {
-        subject2_noise_floor = (uint16)(((uint32)subject2_noise_floor * 31U + energy) / 32U);
-        subject2_status.noise_floor = subject2_noise_floor;
-    }
-
     if(subject2_listening_armed == 0U)
     {
+        subject2_rebase_noise_floor(energy);
+        threshold = subject2_vad_threshold();
         if(energy <= threshold)
         {
             if(subject2_rearm_frames < SUBJECT2_VAD_REARM_FRAMES)
@@ -293,6 +313,12 @@ static void subject2_process_listening_frame(uint16 energy)
             subject2_rearm_frames = 0U;
         }
         return;
+    }
+
+    threshold = subject2_vad_threshold();
+    if(energy <= threshold)
+    {
+        subject2_update_noise_floor(energy);
     }
 
     if(energy > threshold)

@@ -16,6 +16,19 @@ cut.
 
 ## Unreleased
 
+- 2026-07-20 | Fixed | CPU3 subject-2 VAD rearm | Added bounded upward
+  noise-floor rebasing while the listener is unarmed, so a sustained ambient
+  level increase can complete the 500 ms rearm window instead of permanently
+  blocking later captures | `subject2_command_test` passed; ADS rebuild and
+  noisy-hardware rearm validation pending
+
+- 2026-07-20 | Changed | CPU3 subject-2 VAD capture tail | Increased the
+  10 ms-frame continuous-silence completion threshold from 400 ms to 1 second;
+  retained the 0.8 to 3.5 second capture bounds, 200 ms pre-roll, 30 ms start
+  confirmation, and 500 ms rearm quiet period | Source configuration check
+  confirmed 100 x 10 ms = 1,000 ms; `subject2_command_test` passed; ADS
+  rebuild and hardware validation pending
+
 - 2026-07-20 | Fixed | CPU3 subject-2 capture scheduling | Continued the
   16 kHz listener while the state is `CAPTURING`; previously VAD transitioned
   out of `READY` and prevented all subsequent samples and capture completion |
