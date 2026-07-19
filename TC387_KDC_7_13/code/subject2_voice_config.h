@@ -20,13 +20,14 @@
 #define SUBJECT2_AGC_TARGET_PEAK            (20000U)
 #define SUBJECT2_AGC_MAX_GAIN               (32U)
 
-#define SUBJECT2_ASR_SERVER_IP              "192.168.179.94"
 #define SUBJECT2_ASR_SERVER_PORT            "9001"
 #define SUBJECT2_WIFI_LOCAL_PORT            "0"
 
 #define SUBJECT2_NETWORK_RETRY_MS           (5000U)
 #define SUBJECT2_RESPONSE_TIMEOUT_MS        (15000U)
 #define SUBJECT2_RESPONSE_MAX_BYTES        (768U)
+#define SUBJECT2_DEBUG_LOG_ENABLED          (1U)
+#define SUBJECT2_DEBUG_STATUS_PERIOD_MS     (1000U)
 
 #define SUBJECT2_HORN_PWM_CHANNEL           ATOM0_CH3_P21_5
 #define SUBJECT2_HORN_PWM_DUTY              (5000U)

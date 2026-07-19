@@ -35,6 +35,11 @@ static uint8 subject2_start_frames;
 static uint8 subject2_dc_ready;
 static uint8 subject2_listening_armed;
 static uint8 subject2_network_initialized;
+#if SUBJECT2_DEBUG_LOG_ENABLED
+static uint32 subject2_last_debug_status_tick;
+static uint8 subject2_debug_status_pending;
+static uint8 subject2_debug_vad_start_pending;
+#endif
 
 static uint32 subject2_now(void)
 {
@@ -52,6 +57,64 @@ static void subject2_wait_until(uint32 deadline)
     {
     }
 }
+
+#if SUBJECT2_DEBUG_LOG_ENABLED
+static void subject2_debug_log_status(uint32 now)
+{
+    uint32 period_ticks;
+
+    if((subject2_status.state == SUBJECT2_VOICE_CAPTURING) ||
+       (subject2_status.state == SUBJECT2_VOICE_WAITING_RESPONSE))
+    {
+        return;
+    }
+
+    period_ticks = (subject2_stm_frequency / 1000U) *
+                   SUBJECT2_DEBUG_STATUS_PERIOD_MS;
+    if((subject2_debug_status_pending == 0U) &&
+       (subject2_elapsed_ticks(subject2_last_debug_status_tick, now) < period_ticks))
+    {
+        return;
+    }
+
+    subject2_last_debug_status_tick = now;
+    subject2_debug_status_pending = 0U;
+    printf("S2 status: state=%lu wifi=%lu armed=%lu noise=%lu dc=%lu\r\n",
+           (unsigned long)subject2_status.state,
+           (unsigned long)subject2_status.network_ready,
+           (unsigned long)subject2_listening_armed,
+           (unsigned long)subject2_noise_floor,
+           (unsigned long)subject2_dc_estimate);
+}
+
+static void subject2_debug_log_capture(void)
+{
+    printf("S2 capture: samples=%lu ms=%lu noise=%lu\r\n",
+           (unsigned long)subject2_capture_samples,
+           (unsigned long)((subject2_capture_samples * 1000U) /
+                           SUBJECT2_AUDIO_SAMPLE_RATE),
+           (unsigned long)subject2_noise_floor);
+}
+
+static void subject2_debug_log_tcp_connecting(void)
+{
+    printf("S2 TCP: connecting\r\n");
+}
+
+static void subject2_debug_log_transaction(uint8 transaction_ok,
+                                           uint8 command_code)
+{
+    if(transaction_ok == 0U)
+    {
+        printf("S2 TCP: failed\r\n");
+        return;
+    }
+
+    printf("S2 command: code=%lu accepted=%lu\r\n",
+           (unsigned long)command_code,
+           (unsigned long)subject2_status.last_command_accepted);
+}
+#endif
 
 static void subject2_tick_outputs(void)
 {
@@ -188,6 +251,9 @@ static void subject2_start_capture(void)
     subject2_silence_frames = 0U;
     subject2_listening_armed = 0U;
     subject2_status.state = SUBJECT2_VOICE_CAPTURING;
+#if SUBJECT2_DEBUG_LOG_ENABLED
+    subject2_debug_vad_start_pending = 1U;
+#endif
 }
 
 static void subject2_finish_capture(void)
@@ -549,6 +615,11 @@ void Subject2_voice_init(void)
     subject2_dc_ready = 0U;
     subject2_listening_armed = 1U;
     subject2_network_initialized = 0U;
+#if SUBJECT2_DEBUG_LOG_ENABLED
+    subject2_last_debug_status_tick = subject2_last_network_attempt_tick;
+    subject2_debug_status_pending = 1U;
+    subject2_debug_vad_start_pending = 0U;
+#endif
     Subject2_command_init(&subject2_command_state);
     subject2_status = (SUBJECT2_VOICE_STATUS){0};
     subject2_status.state = SUBJECT2_VOICE_OFFLINE;
@@ -573,6 +644,9 @@ void Subject2_voice_task(void)
     uint8 transaction_ok;
 
     now = subject2_now();
+#if SUBJECT2_DEBUG_LOG_ENABLED
+    subject2_debug_log_status(now);
+#endif
     if(subject2_network_initialized == 0U)
     {
         if(subject2_elapsed_ticks(subject2_last_network_attempt_tick, now) >=
@@ -584,18 +658,33 @@ void Subject2_voice_task(void)
             subject2_status.state = (subject2_network_initialized != 0U) ?
                                    SUBJECT2_VOICE_READY : SUBJECT2_VOICE_ERROR;
             subject2_next_sample_tick = subject2_now() + subject2_ticks_per_sample;
+#if SUBJECT2_DEBUG_LOG_ENABLED
+            subject2_debug_status_pending = 1U;
+#endif
         }
         system_delay_ms(2U);
         return;
     }
 
-    if(subject2_status.state == SUBJECT2_VOICE_READY)
+    if((subject2_status.state == SUBJECT2_VOICE_READY) ||
+       (subject2_status.state == SUBJECT2_VOICE_CAPTURING))
     {
         subject2_listener_step();
+#if SUBJECT2_DEBUG_LOG_ENABLED
+        if(subject2_debug_vad_start_pending != 0U)
+        {
+            subject2_debug_vad_start_pending = 0U;
+            printf("S2 VAD: start\r\n");
+        }
+#endif
     }
 
     if(subject2_status.state == SUBJECT2_VOICE_WAITING_RESPONSE)
     {
+#if SUBJECT2_DEBUG_LOG_ENABLED
+        subject2_debug_log_capture();
+        subject2_debug_log_tcp_connecting();
+#endif
         pcm_bytes = subject2_prepare_pcm();
         transaction_ok = subject2_socket_connect();
         if(transaction_ok != 0U)
@@ -609,6 +698,10 @@ void Subject2_voice_task(void)
         wifi_spi_socket_disconnect();
         if(transaction_ok == 0U)
         {
+#if SUBJECT2_DEBUG_LOG_ENABLED
+            subject2_debug_log_transaction(0U, 0U);
+            subject2_debug_status_pending = 1U;
+#endif
             subject2_network_initialized = 0U;
             subject2_status.network_ready = 0U;
             subject2_status.state = SUBJECT2_VOICE_ERROR;
@@ -620,6 +713,10 @@ void Subject2_voice_task(void)
             subject2_status.last_command_accepted =
                 Subject2_command_dispatch(&subject2_command_state, command_code);
             interrupt_global_enable(interrupt_state);
+#if SUBJECT2_DEBUG_LOG_ENABLED
+            subject2_debug_log_transaction(1U, command_code);
+            subject2_debug_status_pending = 1U;
+#endif
             subject2_status.state = SUBJECT2_VOICE_READY;
             subject2_rearm_frames = 0U;
             subject2_listening_armed = 0U;

@@ -2,6 +2,7 @@
 #define SUBJECT2_VOICE_LOCAL_CONFIG_H
 
 /* Copy this file to subject2_voice_local_config.h before building locally. */
+#define SUBJECT2_ASR_SERVER_IP              "192.168.96.94"
 #define SUBJECT2_WIFI_SSID                  ""
 #define SUBJECT2_WIFI_PASSWORD              ""
 

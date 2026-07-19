@@ -16,6 +16,27 @@ cut.
 
 ## Unreleased
 
+- 2026-07-20 | Fixed | CPU3 subject-2 capture scheduling | Continued the
+  16 kHz listener while the state is `CAPTURING`; previously VAD transitioned
+  out of `READY` and prevented all subsequent samples and capture completion |
+  Host command test passed; ADS rebuild and serial/hardware validation pending
+
+- 2026-07-20 | Added | CPU3 subject-2 UART diagnostics | Added throttled
+  UART0 status, capture, TCP failure, and command-result logs without printing
+  inside the 16 kHz sampling path | Host command test passed; ADS rebuild and
+  serial/hardware validation pending
+
+- 2026-07-20 | Changed | CPU3 subject-2 UART diagnostics | Added explicit VAD
+  trigger and TCP-connect stage logs to distinguish active capture from a
+  blocked WiFi-SPI socket connection | Host command test passed; ADS rebuild
+  and serial/hardware validation pending
+
+- 2026-07-20 | Fixed | Subject-2 local ASR endpoint | Moved the computer
+  ASR address into the ignored local voice configuration and set it to the
+  current WiFi address (`192.168.96.94`) so TCP 9001 uploads target this host |
+  Local ASR health endpoint and TCP listener verified; ADS rebuild and hardware
+  validation pending
+
 - 2026-07-19 | Changed | CPU3 subject-2 VAD and local ASR transport |
   Replaced fixed-duration capture with 10 ms frame VAD, 200 ms pre-roll,
   30 ms start confirmation, 400 ms silence completion, 0.8 to 3.5 second
