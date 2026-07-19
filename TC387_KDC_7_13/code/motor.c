@@ -5,6 +5,8 @@
 #define SERVO_MAX_SPEED_DPS         (720.0f)
 #define SERVO_PWM_LIMIT             (2000.0f)
 #define SERVO_PWM_INTEGRAL_LIMIT    (1200.0f)
+#define MOTOR_DRIVER_ENABLE_LEVEL   (0U)
+#define MOTOR_DRIVER_DISABLE_LEVEL  (1U)
 
 /*
  * =========================== PID 参数统一修改区 ===========================
@@ -64,6 +66,9 @@ static MOTOR_PID motor_left_rear_speed_pid;
 static MOTOR_PID motor_right_rear_speed_pid;
 static MOTOR_REAR_SPEED_STATUS motor_left_rear_speed_status;
 static MOTOR_REAR_SPEED_STATUS motor_right_rear_speed_status;
+static uint8 motor_l_armed = ZF_FALSE;
+static uint8 motor_r_armed = ZF_FALSE;
+static uint8 servo_armed = ZF_FALSE;
 
 static const MOTOR_DRIVER motor_l_driver =
 {
@@ -494,7 +499,7 @@ static float motor_rear_speed_pid_update(MOTOR_PID *pid,
 /**
  * @brief  初始化一个双半桥电机驱动器。
  * @param  driver 电机驱动硬件配置。
- * @note   phase_a 和 phase_b 分别初始化为互补 PWM，enable 引脚默认拉高。
+ * @note   DIS 为低电平使能；初始化时先拉高关断，再配置两组互补 PWM。
  */
 static void motor_driver_init(const MOTOR_DRIVER *driver)
 {
@@ -503,19 +508,22 @@ static void motor_driver_init(const MOTOR_DRIVER *driver)
         return;
     }
 
+    gpio_init(driver->enable_pin,
+              GPO,
+              MOTOR_DRIVER_DISABLE_LEVEL,
+              GPO_PUSH_PULL);
     pwm_hl_init(driver->phase_a.top_pin, driver->phase_a.bottom_pin, driver->pwm_freq_hz, 0);
     pwm_hl_init(driver->phase_b.top_pin, driver->phase_b.bottom_pin, driver->pwm_freq_hz, 0);
-    /* Keep the bridge disabled until start() is called explicitly. */
-    gpio_init(driver->enable_pin, GPO, DISABLE, GPO_PUSH_PULL);
 }
 
 /**
  * @brief  设置电机驱动器有符号 PWM 输出。
  * @param  driver 电机驱动硬件配置。
  * @param  pwm    有符号 PWM，占空比单位与 PWM_DUTY_MAX 一致。
- * @note   pwm > 0 时 phase_a 输出，pwm < 0 时 phase_b 输出，pwm = 0 时两相关闭。
+ * @param  armed  非 0 表示允许该通道在收到非零 PWM 时使能。
+ * @note   使用单极性调制；零输出或未授权时拉高 DIS，使电机自由滑行。
  */
-static void motor_driver_set_pwm(const MOTOR_DRIVER *driver, float pwm)
+static void motor_driver_set_pwm(const MOTOR_DRIVER *driver, float pwm, uint8 armed)
 {
     float limit;
     float abs_pwm;
@@ -541,26 +549,29 @@ static void motor_driver_set_pwm(const MOTOR_DRIVER *driver, float pwm)
         duty = PWM_DUTY_MAX;
     }
 
-    if(duty == 0u)
+    if((armed == ZF_FALSE) || (duty == 0U))
     {
-        pwm_hl_set_duty(driver->phase_a.top_pin, 0);
-        pwm_hl_set_duty(driver->phase_b.top_pin, 0);
+        /* 先关断功率级，再预置安全 PWM；互补 PWM 的 0% 本身不是自由滑行。 */
+        gpio_set_level(driver->enable_pin, MOTOR_DRIVER_DISABLE_LEVEL);
+        pwm_hl_set_duty(driver->phase_a.top_pin, 0U);
+        pwm_hl_set_duty(driver->phase_b.top_pin, 0U);
     }
     else if(pwm > 0.0f)
     {
         /*
-         * Positive direction:
-         *   phase A: main/complementary PWM pair
-         *   phase B: main output is constantly 1, complementary output is constantly 0
+         * 正向单极性调制：phase A 固定为低侧导通，phase B 输出互补 PWM。
+         * 先固定旧活动桥臂，最后才使能低有效 DIS。
          */
-        pwm_hl_set_duty(driver->phase_a.top_pin, duty);
-        pwm_hl_set_duty(driver->phase_b.top_pin, PWM_DUTY_MAX);
+        pwm_hl_set_duty(driver->phase_a.top_pin, 100U);
+        pwm_hl_set_duty(driver->phase_b.top_pin, duty+100);
+        gpio_set_level(driver->enable_pin, MOTOR_DRIVER_ENABLE_LEVEL);
     }
     else
     {
-        /* Reverse direction uses the symmetric bridge state. */
-        pwm_hl_set_duty(driver->phase_a.top_pin, PWM_DUTY_MAX);
-        pwm_hl_set_duty(driver->phase_b.top_pin, duty);
+        /* 反向使用对称状态：phase B 固定低，phase A 输出互补 PWM。 */
+        pwm_hl_set_duty(driver->phase_b.top_pin, 100U);
+        pwm_hl_set_duty(driver->phase_a.top_pin, duty+100);
+        gpio_set_level(driver->enable_pin, MOTOR_DRIVER_ENABLE_LEVEL);
     }
 }
 
@@ -666,11 +677,13 @@ void motor_init(void)
     motor_L_duty.feedforward_pwm = 0.0f;
     motor_R_duty.motor_speed = 0.0f;
     motor_R_duty.feedforward_pwm = 0.0f;
+    motor_l_armed = ZF_FALSE;
+    motor_r_armed = ZF_FALSE;
 
     motor_driver_init(&motor_l_driver);
     motor_driver_init(&motor_r_driver);
-    motor_driver_set_pwm(&motor_l_driver, 0.0f);
-    motor_driver_set_pwm(&motor_r_driver, 0.0f);
+    motor_driver_set_pwm(&motor_l_driver, 0.0f, motor_l_armed);
+    motor_driver_set_pwm(&motor_r_driver, 0.0f, motor_r_armed);
 
     /* 后轮驱动初始化时一并装载 motor.c 顶部的默认 PID。 */
     motor_pid_copy_gain(&motor_left_rear_speed_pid,
@@ -689,9 +702,10 @@ void Servo_init(void)
 {
     servo_duty.motor_speed = 0.0f;
     servo_duty.feedforward_pwm = 0.0f;
+    servo_armed = ZF_FALSE;
 
     motor_driver_init(&servo_driver);
-    motor_driver_set_pwm(&servo_driver, 0.0f);
+    motor_driver_set_pwm(&servo_driver, 0.0f, servo_armed);
     servo_pid_load_default();
 
     Servo_pid_reset();
@@ -703,20 +717,18 @@ void Servo_init(void)
 }
 
 /**
- * @brief  使能左右后轮电机和转向电机驱动。
- * @note   使用明确置高，不再使用 toggle，避免多次调用导致驱动反复开关。
+ * @brief  授权左右后轮电机和转向电机驱动。
+ * @note   三路 DIS 保持高电平关断，收到各自首个非零 PWM 后才实际使能。
  */
 void start(void)
 {
-    gpio_set_level(motor_L_DIS, ENABLE);
-    gpio_set_level(motor_R_DIS, ENABLE);
-    gpio_set_level(motor_T_DIS, ENABLE);
+    Motor_enable_channels(ZF_TRUE, ZF_TRUE, ZF_TRUE);
 }
 
 void Motor_set_pwm(float left_pwm, float right_pwm)
 {
-    motor_driver_set_pwm(&motor_l_driver, left_pwm);
-    motor_driver_set_pwm(&motor_r_driver, right_pwm);
+    motor_driver_set_pwm(&motor_l_driver, left_pwm, motor_l_armed);
+    motor_driver_set_pwm(&motor_r_driver, right_pwm, motor_r_armed);
 }
 
 void Motor_rear_speed_control(const MOTOR_REAR_SPEED_INPUT *left,
@@ -754,22 +766,26 @@ void Motor_enable_channels(uint8 left_enable,
                            uint8 right_enable,
                            uint8 steering_enable)
 {
-    gpio_set_level(motor_L_DIS, (left_enable != 0U) ? ENABLE : DISABLE);
-    gpio_set_level(motor_R_DIS, (right_enable != 0U) ? ENABLE : DISABLE);
-    gpio_set_level(motor_T_DIS, (steering_enable != 0U) ? ENABLE : DISABLE);
+    /* 切换授权前先关断全部功率级，避免残留 PWM 立即作用到新通道。 */
+    gpio_set_level(motor_L_DIS, MOTOR_DRIVER_DISABLE_LEVEL);
+    gpio_set_level(motor_R_DIS, MOTOR_DRIVER_DISABLE_LEVEL);
+    gpio_set_level(motor_T_DIS, MOTOR_DRIVER_DISABLE_LEVEL);
+
+    motor_l_armed = (left_enable != 0U) ? ZF_TRUE : ZF_FALSE;
+    motor_r_armed = (right_enable != 0U) ? ZF_TRUE : ZF_FALSE;
+    servo_armed = (steering_enable != 0U) ? ZF_TRUE : ZF_FALSE;
 }
 
 void Motor_stop_all(void)
 {
-    motor_driver_set_pwm(&motor_l_driver, 0.0f);
-    motor_driver_set_pwm(&motor_r_driver, 0.0f);
-    motor_driver_set_pwm(&servo_driver, 0.0f);
+    /* 急停时先同时关断三路功率级，再逐路清除 PWM 状态。 */
+    Motor_enable_channels(ZF_FALSE, ZF_FALSE, ZF_FALSE);
+
+    motor_driver_set_pwm(&motor_l_driver, 0.0f, motor_l_armed);
+    motor_driver_set_pwm(&motor_r_driver, 0.0f, motor_r_armed);
+    motor_driver_set_pwm(&servo_driver, 0.0f, servo_armed);
 
     Motor_rear_speed_pid_reset();
-
-    gpio_set_level(motor_L_DIS, DISABLE);
-    gpio_set_level(motor_R_DIS, DISABLE);
-    gpio_set_level(motor_T_DIS, DISABLE);
 }
 
 /**
@@ -785,7 +801,7 @@ void Servo_control(MOTOR_DUTY *duty)
 
     if(duty == 0)
     {
-        motor_driver_set_pwm(&servo_driver, 0.0f);
+        motor_driver_set_pwm(&servo_driver, 0.0f, servo_armed);
         return;
     }
 
@@ -817,7 +833,7 @@ void Servo_control(MOTOR_DUTY *duty)
     pwm_output = motor_clampf(pwm_output, -output_limit, output_limit);
     servo_pid.speed.state.output = pwm_output;
 
-    motor_driver_set_pwm(&servo_driver, pwm_output);
+    motor_driver_set_pwm(&servo_driver, pwm_output, servo_armed);
 }
 
 void Servo_position_control(MOTOR_DUTY *duty)
@@ -828,7 +844,7 @@ void Servo_position_control(MOTOR_DUTY *duty)
 
     if(duty == 0)
     {
-        motor_driver_set_pwm(&servo_driver, 0.0f);
+        motor_driver_set_pwm(&servo_driver, 0.0f, servo_armed);
         return;
     }
 
@@ -855,7 +871,7 @@ void Servo_position_control(MOTOR_DUTY *duty)
     }
     pwm_output = motor_clampf(pwm_output, -output_limit, output_limit);
     servo_position_pid.state.output = pwm_output;
-    motor_driver_set_pwm(&servo_driver, pwm_output);
+    motor_driver_set_pwm(&servo_driver, pwm_output, servo_armed);
 }
 
 /**
