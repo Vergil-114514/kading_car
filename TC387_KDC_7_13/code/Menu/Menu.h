@@ -22,12 +22,13 @@
 #define MENU_CURSOR_SECOND_CHAR        ('>')
 #define MENU_STARTUP_PAGE_HOLD_MS      (2000U)
 
-/** 自动页面编号：上电状态页、遥控数据页和测试调参页。 */
+/** Automatic pages: startup, remote, test tuning, and save-point status. */
 typedef enum
 {
     MENU_PAGE_SYSTEM = 0,
     MENU_PAGE_REMOTE,
-    MENU_PAGE_TEST
+    MENU_PAGE_TEST,
+    MENU_PAGE_SAVE_POINT
 } MenuPage_e;
 
 /** CPU0 在 Menu_init() 前提交的外设初始化结果。 */
@@ -76,7 +77,7 @@ void Menu_init(void);
 /** 主循环非阻塞任务：接收 LoRa、进入启动模式和处理模式数据，不刷新屏幕。 */
 void Menu_Task(void);
 
-/** CPU0 主循环 100 ms 菜单任务：只更新页面计时，不执行电机控制。 */
+/** CPU0 100 ms task: update page timing and save-point WiFi retry timing. */
 void Menu_100msTask(void);
 
 /** CPU2 的 5 ms 控制中断接口：执行失联保护和当前模式电机控制，不访问屏幕。 */

@@ -20,6 +20,5 @@ CarMode_e BoardModeSwitch_Init(void)
     bit1 = (gpio_get_level(BOARD_MODE_BIT1_PIN) == 0U) ? 1U : 0U;
 
     carmode=(bit0 | (uint8_t)(bit1 << 1U));
-    printf("%d\r\n",carmode);
     return (CarMode_e)carmode;
 }

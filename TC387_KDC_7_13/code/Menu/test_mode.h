@@ -54,7 +54,7 @@ typedef struct
 
 /* 测试时的机械/速度/PWM 安全限值。 */
 #define TEST_MODE_MAX_STEERING_DEG        (20.0f)
-#define TEST_MODE_MAX_WHEEL_RAD_S         (10.0f)
+#define TEST_MODE_MAX_WHEEL_SPEED_MPS     (2.0f)
 #define TEST_MODE_DRIVE_MAX_SPEED_MPS     (1.5f)
 #define TEST_MODE_REAR_PWM_LIMIT          (2000.0f)
 

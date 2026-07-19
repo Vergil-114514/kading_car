@@ -38,6 +38,7 @@ int main(void)
     TopSpeed_GPS_INS_Output navigation;
     TopSpeed_GPS_INS_GPS_Output gps;
     TopSpeed_GPS_INS_IMU_Output imu;
+    TopSpeed_GPS_INS_LocalOdometryOutput local_odometry;
     static const uint8_t solutions[] = {
         NAVIGATION_SOLUTION_MAHONY,
         NAVIGATION_SOLUTION_FUSION,
@@ -46,6 +47,7 @@ int main(void)
     unsigned solution_index;
     unsigned tick;
     float position_x_before_turn_drive;
+    uint32_t local_reset_sequence;
 
     assert(TopSpeed_GPS_INS_PortInit(0U, 0U) == 2U);
 
@@ -92,6 +94,25 @@ int main(void)
         assert(fabsf(imu.raw_yaw_deg) > 20.0f);
         imu963ra_gyro_z = 0;
 
+        if(solutions[solution_index] == NAVIGATION_SOLUTION_MAHONY)
+        {
+            /* CPU2 requests the launch frame; CPU1 applies it on this tick. */
+            local_reset_sequence =
+                TopSpeed_GPS_INS_PortRequestLocalOdometryReset();
+            assert(local_reset_sequence != 0U);
+            TopSpeed_GPS_INS_Port5msCallback();
+            TopSpeed_GPS_INS_PortGetLocalOdometryOutput(&local_odometry);
+            assert(local_odometry.reset_sequence == local_reset_sequence);
+            assert(nearly_equal(local_odometry.position_m.x, 0.0f, 0.0001f));
+            assert(nearly_equal(local_odometry.position_m.y, 0.0f, 0.0001f));
+            assert(nearly_equal(local_odometry.relative_yaw_deg,
+                                0.0f,
+                                0.0001f));
+            assert(nearly_equal(local_odometry.distance_m,
+                                0.0f,
+                                0.0001f));
+        }
+
         /* 转向后的航向必须真正参与坐标递推，而不只是用于屏幕显示。 */
         TopSpeed_GPS_INS_PortGetOutput(&navigation);
         position_x_before_turn_drive = navigation.position_m.x;
@@ -103,6 +124,14 @@ int main(void)
         TopSpeed_GPS_INS_PortGetOutput(&navigation);
         assert(fabsf(navigation.position_m.x - position_x_before_turn_drive) >
                0.2f);
+        if(solutions[solution_index] == NAVIGATION_SOLUTION_MAHONY)
+        {
+            TopSpeed_GPS_INS_PortGetLocalOdometryOutput(&local_odometry);
+            assert(local_odometry.valid != 0U);
+            assert(fabsf(local_odometry.position_m.x) < 0.05f);
+            assert(nearly_equal(local_odometry.position_m.y, 1.0f, 0.03f));
+            assert(nearly_equal(local_odometry.distance_m, 1.0f, 0.03f));
+        }
     }
 
     assert(TopSpeed_GPS_INS_PortInit(1U,

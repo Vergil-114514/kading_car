@@ -3,12 +3,18 @@
 
 #include <stdint.h>
 
-/* Vehicle geometry requested for the first version. */
-#define ACKERMANN_WHEELBASE_M                  (0.8f)
-#define ACKERMANN_TRACK_WIDTH_M                (1.0f)
-#define ACKERMANN_WHEEL_RADIUS_M               (0.2f)
+/* Measured distance between axles and between the rear-wheel contact centres. */
+#define ACKERMANN_WHEELBASE_M                  (0.58f)
+#define ACKERMANN_TRACK_WIDTH_M                (0.60f)
+#define ACKERMANN_MAX_WHEEL_SPEED_MPS          (3.0f)
 #define ACKERMANN_CONTROL_PERIOD_S             (0.005f)
 #define ACKERMANN_CONTROL_PERIOD_MS            (5U)
+
+/* Steering calibration verified on the vehicle: raw 876 is straight ahead,
+ * and measured encoder angle increases when the front wheels turn left. */
+#define ACKERMANN_STEERING_CENTER_ENCODER_DEG  (76.9921875f)
+#define ACKERMANN_STEERING_ENCODER_RATIO       (1.0f)
+#define ACKERMANN_STEERING_SIGN                (1.0f)
 
 #define ACKERMANN_PI                           (3.14159265358979323846f)
 #define ACKERMANN_DEG_TO_RAD                   (ACKERMANN_PI / 180.0f)
@@ -28,10 +34,9 @@ typedef struct
 {
     float wheelbase_m;
     float track_width_m;
-    float wheel_radius_m;
     float control_period_s;
 
-    /* Encoder sign corrects the signed angular speed produced by encoder.c. */
+    /* Encoder sign corrects the signed linear speed produced by encoder.c. */
     float left_encoder_sign;
     float right_encoder_sign;
     float left_motor_sign;
@@ -45,7 +50,7 @@ typedef struct
 
     float max_vehicle_speed_mps;
     float max_acceleration_mps2;
-    float max_wheel_speed_rad_s;
+    float max_wheel_speed_mps;
     float stop_speed_threshold_mps;
     float command_timeout_s;
     uint8_t allow_active_braking;
@@ -60,8 +65,8 @@ typedef struct
     ACKERMANN_PID_GAIN steering_position_pid;
     ACKERMANN_PID_GAIN left_speed_pid;
     ACKERMANN_PID_GAIN right_speed_pid;
-    float left_feedforward_pwm_per_rad_s;
-    float right_feedforward_pwm_per_rad_s;
+    float left_feedforward_pwm_per_mps;
+    float right_feedforward_pwm_per_mps;
 } ACKERMANN_CONTROL_CONFIG;
 
 typedef struct
@@ -87,10 +92,10 @@ typedef struct
     float steering_encoder_target_deg;
     float steering_encoder_measured_deg;
 
-    float left_target_rad_s;
-    float right_target_rad_s;
-    float left_measured_rad_s;
-    float right_measured_rad_s;
+    float left_target_mps;
+    float right_target_mps;
+    float left_measured_mps;
+    float right_measured_mps;
     float left_pwm;
     float right_pwm;
 
@@ -118,10 +123,10 @@ void Ackermann_set_path_error(float cross_track_error_m,
                               float target_speed_mps);
 void Ackermann_invalidate_path(void);
 
-/* left/right_measured_rad_s come directly from encoder.c. This controller no
- * longer reads counts, converts CPR, or filters encoder feedback. */
-void Ackermann_control_step(float left_measured_rad_s,
-                            float right_measured_rad_s,
+/* left/right_measured_mps come directly from encoder.c. This controller no
+ * longer reads counts, converts CPR, or requires a wheel radius. */
+void Ackermann_control_step(float left_measured_mps,
+                            float right_measured_mps,
                             uint8_t encoder_feedback_valid);
 
 void Ackermann_set_steering_center(float encoder_angle_deg);
@@ -145,5 +150,11 @@ void Ackermann_electronic_differential(float center_speed_mps,
                                        const ACKERMANN_CONTROL_CONFIG *config,
                                        float *left_speed_mps,
                                        float *right_speed_mps);
+float Ackermann_road_steering_to_encoder_angle_deg(
+    float road_steering_rad,
+    const ACKERMANN_CONTROL_CONFIG *config);
+float Ackermann_encoder_angle_to_road_steering_rad(
+    float encoder_angle_deg,
+    const ACKERMANN_CONTROL_CONFIG *config);
 
 #endif

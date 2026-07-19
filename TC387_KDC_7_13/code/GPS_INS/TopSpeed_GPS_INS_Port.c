@@ -7,7 +7,7 @@
 
 typedef struct
 {
-    volatile uint8_t ready;
+    volatile uint32_t sequence;
     float speed_mps;
     uint8_t valid;
 } TopSpeed_GPS_INS_EncoderPending;
@@ -47,13 +47,19 @@ typedef struct
     FusionAhrs fusion;
 
     TopSpeed_GPS_INS_EncoderPending encoder_pending;
+    uint32_t encoder_consumed_sequence;
     TopSpeed_GPS_INS_GPSPending gps_pending;
+    volatile uint32_t local_odometry_reset_request_sequence;
 
     TopSpeed_GPS_INS_IMU_Output imu_output;
     TopSpeed_GPS_INS_GPS_Output gps_output;
+    TopSpeed_GPS_INS_LocalOdometryOutput local_odometry;
+    float local_odometry_origin_heading_deg;
+    uint8_t local_odometry_active;
     TopSpeed_GPS_INS_Output navigation_snapshot;
     TopSpeed_GPS_INS_IMU_Output imu_snapshot;
     TopSpeed_GPS_INS_GPS_Output gps_snapshot;
+    TopSpeed_GPS_INS_LocalOdometryOutput local_odometry_snapshot;
     volatile uint32_t snapshot_sequence;
 } TopSpeed_GPS_INS_PortContext;
 
@@ -84,6 +90,68 @@ static float TopSpeed_GPS_INS_PortNormalizeHeading(float heading_deg)
         heading_deg += 360.0f;
     }
     return heading_deg;
+}
+
+static void TopSpeed_GPS_INS_PortUpdateLocalOdometry(void)
+{
+    TopSpeed_GPS_INS_LocalOdometryOutput *odometry =
+        &g_topSpeedGpsInsPort.local_odometry;
+    TopSpeed_GPS_INS_Output navigation = TopSpeed_GPS_INS_GetOutput();
+    uint32_t reset_request_sequence =
+        g_topSpeedGpsInsPort.local_odometry_reset_request_sequence;
+    float relative_yaw_rad;
+    float distance_m;
+
+    odometry->initialized = g_topSpeedGpsInsPort.initialized;
+    odometry->heading_valid = g_topSpeedGpsInsPort.imu_output.valid;
+    odometry->encoder_valid = navigation.encoder_valid;
+    odometry->encoder_speed_mps = navigation.encoder_valid
+        ? navigation.encoder_speed_mps : 0.0f;
+
+    if(reset_request_sequence != odometry->reset_sequence)
+    {
+        if(odometry->heading_valid == 0U)
+        {
+            odometry->valid = 0U;
+            return;
+        }
+
+        g_topSpeedGpsInsPort.local_odometry_origin_heading_deg =
+            g_topSpeedGpsInsPort.imu_output.heading_deg;
+        odometry->position_m.x = 0.0f;
+        odometry->position_m.y = 0.0f;
+        odometry->relative_yaw_deg = 0.0f;
+        odometry->distance_m = 0.0f;
+        odometry->reset_sequence = reset_request_sequence;
+        odometry->valid = 0U;
+        g_topSpeedGpsInsPort.local_odometry_active = 1U;
+        return;
+    }
+
+    if(g_topSpeedGpsInsPort.local_odometry_active == 0U)
+    {
+        odometry->valid = 0U;
+        return;
+    }
+
+    odometry->relative_yaw_deg = TopSpeed_GPS_INS_PortNormalizeHeading(
+        g_topSpeedGpsInsPort.imu_output.heading_deg
+        - g_topSpeedGpsInsPort.local_odometry_origin_heading_deg);
+    if((odometry->heading_valid == 0U) ||
+       (odometry->encoder_valid == 0U))
+    {
+        odometry->valid = 0U;
+        return;
+    }
+
+    relative_yaw_rad = odometry->relative_yaw_deg
+                     * (TOPSPEED_GPS_INS_PORT_PI / 180.0f);
+    distance_m = odometry->encoder_speed_mps * TOPSPEED_GPS_INS_PERIOD_S;
+    /* Launch direction is local +Y; local +X points to the vehicle's right. */
+    odometry->position_m.x += sinf(relative_yaw_rad) * distance_m;
+    odometry->position_m.y += cosf(relative_yaw_rad) * distance_m;
+    odometry->distance_m += fabsf(distance_m);
+    odometry->valid = 1U;
 }
 
 static void TopSpeed_GPS_INS_PortResetQuaternion(void)
@@ -317,6 +385,8 @@ static void TopSpeed_GPS_INS_PortPublishSnapshot(void)
     g_topSpeedGpsInsPort.navigation_snapshot = TopSpeed_GPS_INS_GetOutput();
     g_topSpeedGpsInsPort.imu_snapshot = g_topSpeedGpsInsPort.imu_output;
     g_topSpeedGpsInsPort.gps_snapshot = g_topSpeedGpsInsPort.gps_output;
+    g_topSpeedGpsInsPort.local_odometry_snapshot =
+        g_topSpeedGpsInsPort.local_odometry;
     g_topSpeedGpsInsPort.snapshot_sequence++;
 }
 
@@ -406,6 +476,7 @@ uint8_t TopSpeed_GPS_INS_PortInit(uint8_t use_gps,
         gnss_flag = 0U;
     }
     g_topSpeedGpsInsPort.initialized = 1U;
+    g_topSpeedGpsInsPort.local_odometry.initialized = 1U;
     TopSpeed_GPS_INS_PortPublishSnapshot();
     return imu_state;
 }
@@ -578,22 +649,24 @@ void TopSpeed_GPS_INS_PortGnssPoll(void)
 void TopSpeed_GPS_INS_PortEncoderSpeedUpdate(float speed_mps)
 {
     boolean interrupt_state = IfxCpu_disableInterrupts();
+    uint32_t sequence = g_topSpeedGpsInsPort.encoder_pending.sequence;
 
-    g_topSpeedGpsInsPort.encoder_pending.ready = 0U;
+    g_topSpeedGpsInsPort.encoder_pending.sequence = sequence + 1U;
     g_topSpeedGpsInsPort.encoder_pending.speed_mps = speed_mps;
     g_topSpeedGpsInsPort.encoder_pending.valid = 1U;
-    g_topSpeedGpsInsPort.encoder_pending.ready = 1U;
+    g_topSpeedGpsInsPort.encoder_pending.sequence = sequence + 2U;
     IfxCpu_restoreInterrupts(interrupt_state);
 }
 
 void TopSpeed_GPS_INS_PortEncoderInvalidate(void)
 {
     boolean interrupt_state = IfxCpu_disableInterrupts();
+    uint32_t sequence = g_topSpeedGpsInsPort.encoder_pending.sequence;
 
-    g_topSpeedGpsInsPort.encoder_pending.ready = 0U;
+    g_topSpeedGpsInsPort.encoder_pending.sequence = sequence + 1U;
     g_topSpeedGpsInsPort.encoder_pending.speed_mps = 0.0f;
     g_topSpeedGpsInsPort.encoder_pending.valid = 0U;
-    g_topSpeedGpsInsPort.encoder_pending.ready = 1U;
+    g_topSpeedGpsInsPort.encoder_pending.sequence = sequence + 2U;
     IfxCpu_restoreInterrupts(interrupt_state);
 }
 
@@ -620,6 +693,8 @@ void TopSpeed_GPS_INS_Port5msCallback(void)
     TopSpeed_GPS_INS_EncoderPending encoder;
     TopSpeed_GPS_INS_GPSPending gps;
     boolean interrupt_state;
+    uint32_t encoder_sequence_start;
+    uint32_t encoder_sequence_end;
     uint8_t encoder_ready = 0U;
     uint8_t gps_ready = 0U;
 
@@ -634,15 +709,30 @@ void TopSpeed_GPS_INS_Port5msCallback(void)
         g_topSpeedGpsInsPort.reset_pending = 0U;
     }
 
-    interrupt_state = IfxCpu_disableInterrupts();
-    if (g_topSpeedGpsInsPort.encoder_pending.ready)
+    for(;;)
     {
+        encoder_sequence_start =
+            g_topSpeedGpsInsPort.encoder_pending.sequence;
+        if(encoder_sequence_start & 1U)
+        {
+            continue;
+        }
         encoder.speed_mps = g_topSpeedGpsInsPort.encoder_pending.speed_mps;
         encoder.valid = g_topSpeedGpsInsPort.encoder_pending.valid;
-        g_topSpeedGpsInsPort.encoder_pending.ready = 0U;
+        encoder_sequence_end = g_topSpeedGpsInsPort.encoder_pending.sequence;
+        if((encoder_sequence_start == encoder_sequence_end) &&
+           !(encoder_sequence_end & 1U))
+        {
+            break;
+        }
+    }
+    if(encoder_sequence_end !=
+       g_topSpeedGpsInsPort.encoder_consumed_sequence)
+    {
+        g_topSpeedGpsInsPort.encoder_consumed_sequence =
+            encoder_sequence_end;
         encoder_ready = 1U;
     }
-    IfxCpu_restoreInterrupts(interrupt_state);
     if (encoder_ready)
     {
         TopSpeed_GPS_INS_UpdateEncoderSpeed(encoder.speed_mps, encoder.valid);
@@ -677,7 +767,56 @@ void TopSpeed_GPS_INS_Port5msCallback(void)
         TopSpeed_GPS_INS_UpdateGPS(gps.position_m, gps.speed_mps, gps.valid);
     }
 
+    TopSpeed_GPS_INS_PortUpdateLocalOdometry();
     TopSpeed_GPS_INS_PortPublishSnapshot();
+}
+
+uint32_t TopSpeed_GPS_INS_PortRequestLocalOdometryReset(void)
+{
+    boolean interrupt_state;
+    uint32_t sequence;
+
+    if(g_topSpeedGpsInsPort.initialized == 0U)
+    {
+        return 0U;
+    }
+
+    interrupt_state = IfxCpu_disableInterrupts();
+    sequence = g_topSpeedGpsInsPort.local_odometry_reset_request_sequence + 1U;
+    if(sequence == 0U)
+    {
+        sequence = 1U;
+    }
+    g_topSpeedGpsInsPort.local_odometry_reset_request_sequence = sequence;
+    IfxCpu_restoreInterrupts(interrupt_state);
+    return sequence;
+}
+
+void TopSpeed_GPS_INS_PortGetLocalOdometryOutput(
+    TopSpeed_GPS_INS_LocalOdometryOutput *output)
+{
+    uint32_t sequence_start;
+    uint32_t sequence_end;
+
+    if(output == 0)
+    {
+        return;
+    }
+
+    for(;;)
+    {
+        sequence_start = g_topSpeedGpsInsPort.snapshot_sequence;
+        if(sequence_start & 1U)
+        {
+            continue;
+        }
+        *output = g_topSpeedGpsInsPort.local_odometry_snapshot;
+        sequence_end = g_topSpeedGpsInsPort.snapshot_sequence;
+        if((sequence_start == sequence_end) && !(sequence_end & 1U))
+        {
+            break;
+        }
+    }
 }
 
 void TopSpeed_GPS_INS_PortGetOutput(TopSpeed_GPS_INS_Output *output)

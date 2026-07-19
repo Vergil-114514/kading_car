@@ -17,8 +17,8 @@
 /** 两位拨码组成的 0~3 对应四种工作模式。 */
 typedef enum
 {
-    CAR_MODE_TRACK = 0,       /**< 00：循迹模式，当前预留外部接口。 */
-    CAR_MODE_SAVE_POINT = 1,  /**< 01：存点模式，当前预留外部接口。 */
+    CAR_MODE_TRACK = 0,       /**< 00：按编译期方向跟踪闪存路线。 */
+    CAR_MODE_SAVE_POINT = 1,  /**< 01：LoRa 遥控存点模式。 */
     CAR_MODE_TEST = 2,        /**< 10：电机/PID 测试模式。 */
     CAR_MODE_REMOTE = 3,      /**< 11：LoRa 遥控运动模式。 */
     CAR_MODE_COUNT            /**< 模式数量，仅用于数组边界检查。 */

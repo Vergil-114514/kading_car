@@ -1,4 +1,6 @@
 #include "zf_common_headfile.h"
+#include "save_point_mode.h"
+#include "reverse_track_mode.h"
 
 /* 菜单页面计时由 CPU0 主循环中的 100 ms 显示任务推进。 */
 #define MENU_MAIN_PERIOD_MS            (100U)
@@ -29,7 +31,7 @@ static const char g_system_page[MENU_ROW_COUNT][MENU_COLUMN_COUNT + 1U] =
     "   PAGE 1 / STARTUP STATUS    "
 };
 
-/* 第 2 页：遥控器、三电机、编码器、陀螺仪和 GPS 实时数据。 */
+/* 第 2 页：遥控器、三电机、编码器、解算姿态、车辆坐标和 GPS 实时数据。 */
 static const char g_remote_page[MENU_ROW_COUNT][MENU_COLUMN_COUNT + 1U] =
 {
     "                              ",
@@ -41,14 +43,14 @@ static const char g_remote_page[MENU_ROW_COUNT][MENU_COLUMN_COUNT + 1U] =
     "   PWM LEFT:                  ",
     "   PWM RIGHT:                 ",
     "   PWM STEER:                 ",
-    "   ENC LEFT (rad/s):          ",
-    "   ENC RIGHT(rad/s):          ",
+    "   ENC LEFT (m/s):            ",
+    "   ENC RIGHT(m/s):            ",
     "   ENC STEER (deg):           ",
-    "   GYRO X (dps):              ",
-    "   GYRO Y (dps):              ",
-    "   GYRO Z (dps):              ",
-    "   GPS LAT:                   ",
-    "   GPS LON:                   ",
+    "   IMU ROLL (deg):            ",
+    "   IMU PITCH(deg):            ",
+    "   IMU HEADING(deg):          ",
+    "   CAR X (m):                 ",
+    "   CAR Y (m):                 ",
     "   GPS SPEED(m/s):            ",
     "   GPS FIX:   DIR:      SAT:  ",
     "   LOST => ALL MOTORS OFF     "
@@ -77,6 +79,30 @@ static const char g_test_page[MENU_ROW_COUNT][MENU_COLUMN_COUNT + 1U] =
     "   Kd:                        ",
     " K0 TERM K1 CLR  K2- K3+      ",
     " SW0 S SW1 L SW2 R SW3 DRIVE  "
+};
+
+static const char g_save_point_page[MENU_ROW_COUNT][MENU_COLUMN_COUNT + 1U] =
+{
+    "                              ",
+    "       SAVE POINT MODE        ",
+    "   STATE:                     ",
+    "   POINTS:       /1024        ",
+    "   CUR X (m):                 ",
+    "   CUR Y (m):                 ",
+    "   LAST X (m):                ",
+    "   LAST Y (m):                ",
+    "   REL YAW (deg):             ",
+    "   TO NEXT (m):               ",
+    "   LORA LINK:                 ",
+    "   WIFI INIT:                 ",
+    "   TCP LINK:                  ",
+    "   WIFI SENT:                 ",
+    "   WIFI ERR:                  ",
+    "   FLASH:                     ",
+    "   LX: STEER  RY: SPEED      ",
+    "   S5: 0 OPEN / 1 ACK DIFF   ",
+    "   S3: START / RESTART       ",
+    "   S4: STOP  S3+S4: SAVE     "
 };
 
 static const char *const g_mode_names[CAR_MODE_COUNT] =
@@ -159,16 +185,29 @@ static uint8_t menu_pack_bits(const uint8_t values[4])
 static void menu_emergency_stop(void)
 {
     Ackermann_control_enable(0U);
+    ReverseTrackMode_Exit();
     TestMode_EmergencyStop();
     RemoteMode_EmergencyStop();
+    SavePointMode_Exit();
     Motor_stop_all();
 }
 
 static void menu_enter_internal_mode(CarMode_e mode)
 {
-    if(mode == CAR_MODE_TEST)
+    if(mode == CAR_MODE_TRACK)
+    {
+        ReverseTrackMode_Enter();
+    }
+    else if(mode == CAR_MODE_TEST)
     {
         TestMode_Enter();
+    }
+    else if(mode == CAR_MODE_SAVE_POINT)
+    {
+        /* SAVE POINT keeps the recording keys while reusing the proven
+         * joystick, S5 differential and LoRa failsafe motor controller. */
+        RemoteMode_Enter();
+        SavePointMode_Enter();
     }
     else if(mode == CAR_MODE_REMOTE)
     {
@@ -190,6 +229,26 @@ static const char *menu_test_channel_name(TestModeChannel_e channel)
 
     if(channel > TEST_MODE_CHANNEL_SWITCH_CONFLICT) { return "UNKNOWN"; }
     return names[channel];
+}
+
+static const char *menu_save_point_state(const SavePointModeStatus_t *status)
+{
+    if(status->flash_save_pending != 0U) { return "SAVING"; }
+    if(status->full != 0U) { return "FULL"; }
+    if(status->recording != 0U) { return "RECORDING"; }
+    if(status->start_rejected != 0U) { return "WAIT NAV/IMU"; }
+    if(status->flash_saved != 0U) { return "SAVED"; }
+    if(status->point_count != 0U) { return "STOPPED"; }
+    return "IDLE";
+}
+
+static const char *menu_save_point_flash_state(
+    const SavePointModeStatus_t *status)
+{
+    if(status->flash_save_pending != 0U) { return "WRITING"; }
+    if(status->flash_saved != 0U) { return "SAVED"; }
+    if(status->point_count != 0U) { return "UNSAVED"; }
+    return "EMPTY";
 }
 
 /** 第 1 页动态数据：外设、拨码模式、解算方式和车辆坐标。 */
@@ -249,16 +308,18 @@ static void menu_display_system_data(void)
                       navigation.gps_speed_mps, 7U, 2U);
 }
 
-/** 第 2 页动态数据：遥控器、三电机、编码器、陀螺仪和 GPS。 */
+/** 第 2 页动态数据：遥控器、三电机、编码器、解算姿态、车辆坐标和 GPS。 */
 static void menu_display_remote_data(void)
 {
     LoraRemoteState_t remote;
     RemoteModeStatus_t motor;
+    TopSpeed_GPS_INS_Output navigation;
     TopSpeed_GPS_INS_IMU_Output imu;
     TopSpeed_GPS_INS_GPS_Output gps;
 
     LoraRemote_GetState(&remote);
     RemoteMode_GetStatus(&motor);
+    TopSpeed_GPS_INS_PortGetOutput(&navigation);
     TopSpeed_GPS_INS_PortGetIMUOutput(&imu);
     TopSpeed_GPS_INS_PortGetGPSOutput(&gps);
 
@@ -282,17 +343,19 @@ static void menu_display_remote_data(void)
                     (int32)motor.steering_pwm, 7U);
     /* 标签在第 19 列结束；数值从第 20 列开始，缩短整数位后仍保留符号。 */
     ips200_show_float(160U, 9U * MENU_FONT_HEIGHT,
-                      motor.left_measured_rad_s, 5U, 2U);
+                      motor.left_measured_mps, 5U, 2U);
     ips200_show_float(160U, 10U * MENU_FONT_HEIGHT,
-                      motor.right_measured_rad_s, 5U, 2U);
+                      motor.right_measured_mps, 5U, 2U);
     ips200_show_float(160U, 11U * MENU_FONT_HEIGHT,
                       motor.steering_measured_deg, 5U, 1U);
 
-    ips200_show_float(128U, 12U * MENU_FONT_HEIGHT, imu.gyro_x_dps, 7U, 2U);
-    ips200_show_float(128U, 13U * MENU_FONT_HEIGHT, imu.gyro_y_dps, 7U, 2U);
-    ips200_show_float(128U, 14U * MENU_FONT_HEIGHT, imu.gyro_z_dps, 7U, 2U);
-    ips200_show_float(96U, 15U * MENU_FONT_HEIGHT, gps.latitude_deg, 4U, 6U);
-    ips200_show_float(96U, 16U * MENU_FONT_HEIGHT, gps.longitude_deg, 4U, 6U);
+    ips200_show_float(160U, 12U * MENU_FONT_HEIGHT, imu.roll_deg, 7U, 1U);
+    ips200_show_float(160U, 13U * MENU_FONT_HEIGHT, imu.pitch_deg, 7U, 1U);
+    ips200_show_float(160U, 14U * MENU_FONT_HEIGHT, imu.heading_deg, 7U, 1U);
+    ips200_show_float(128U, 15U * MENU_FONT_HEIGHT,
+                      navigation.position_m.x, 8U, 2U);
+    ips200_show_float(128U, 16U * MENU_FONT_HEIGHT,
+                      navigation.position_m.y, 8U, 2U);
     ips200_show_float(144U, 17U * MENU_FONT_HEIGHT, gps.speed_mps, 7U, 2U);
     menu_show_fixed_string(88U, 18U * MENU_FONT_HEIGHT,
         (gps.valid != 0U) ? "OK" : ((gps.enabled != 0U) ? "NO" : "OFF"), 3U);
@@ -353,6 +416,57 @@ static void menu_display_test_data(void)
     }
 }
 
+static void menu_display_save_point_data(void)
+{
+    SavePointModeStatus_t status;
+    LoraRemoteState_t remote;
+    float distance_to_next_m = 0.0f;
+
+    SavePointMode_GetStatus(&status);
+    LoraRemote_GetState(&remote);
+    if(status.recording != 0U)
+    {
+        distance_to_next_m = SAVE_POINT_MODE_SAMPLE_DISTANCE_M
+                           - status.distance_since_last_point_m;
+        if(distance_to_next_m < 0.0f) { distance_to_next_m = 0.0f; }
+        if(distance_to_next_m > SAVE_POINT_MODE_SAMPLE_DISTANCE_M)
+        {
+            distance_to_next_m = SAVE_POINT_MODE_SAMPLE_DISTANCE_M;
+        }
+    }
+
+    menu_show_fixed_string(80U, 2U * MENU_FONT_HEIGHT,
+                           menu_save_point_state(&status), 14U);
+    ips200_show_uint(88U, 3U * MENU_FONT_HEIGHT,
+                     status.point_count, 4U);
+    ips200_show_float(112U, 4U * MENU_FONT_HEIGHT,
+                      status.local_x_m, 8U, 2U);
+    ips200_show_float(112U, 5U * MENU_FONT_HEIGHT,
+                      status.local_y_m, 8U, 2U);
+    ips200_show_float(120U, 6U * MENU_FONT_HEIGHT,
+                      status.last_point_x_m, 8U, 2U);
+    ips200_show_float(120U, 7U * MENU_FONT_HEIGHT,
+                      status.last_point_y_m, 8U, 2U);
+    ips200_show_float(136U, 8U * MENU_FONT_HEIGHT,
+                      status.relative_yaw_deg, 7U, 1U);
+    ips200_show_float(120U, 9U * MENU_FONT_HEIGHT,
+                      distance_to_next_m, 5U, 2U);
+    menu_show_fixed_string(112U, 10U * MENU_FONT_HEIGHT,
+                           (remote.link_ok != 0U) ? "OK" : "LOST", 5U);
+    menu_show_fixed_string(112U, 11U * MENU_FONT_HEIGHT,
+        (status.wifi_initialized != 0U)
+        ? "OK" : ((status.wifi_error_count != 0U) ? "RETRY" : "WAIT"), 5U);
+    menu_show_fixed_string(104U, 12U * MENU_FONT_HEIGHT,
+        (status.wifi_connected != 0U)
+        ? "OK" : ((status.wifi_error_count != 0U) ? "RETRY" : "WAIT"), 5U);
+    ips200_show_uint(112U, 13U * MENU_FONT_HEIGHT,
+                     status.wifi_sent_count, 4U);
+    ips200_show_uint(104U, 14U * MENU_FONT_HEIGHT,
+                     status.wifi_error_count, 5U);
+    menu_show_fixed_string(88U, 15U * MENU_FONT_HEIGHT,
+                           menu_save_point_flash_state(&status), 8U);
+}
+
 void Menu_DisplayPage(
     const char page[MENU_ROW_COUNT][MENU_COLUMN_COUNT + 1U],
     uint8_t cursor_row)
@@ -396,6 +510,10 @@ void Menu_init(void)
 {
     /* BoardModeSwitch_Init 内部完成本次上电唯一一次主板拨码读取。 */
     menu.mode = BoardModeSwitch_Init();
+    printf("S6 boot mode: %u (%s)\r\n",
+           (unsigned int)menu.mode,
+           (menu.mode < CAR_MODE_COUNT)
+               ? g_mode_names[menu.mode] : "UNKNOWN");
     menu.page = MENU_PAGE_SYSTEM;
     menu.startup_page_ticks = 0U;
     g_display_page_valid = 0U;
@@ -404,6 +522,8 @@ void Menu_init(void)
     g_peripheral_status.lora_initialized = 1U;
     TestMode_Init();
     RemoteMode_Init();
+    SavePointMode_Init();
+    ReverseTrackMode_Init();
     menu_emergency_stop();
 
     menu.cursor_row = MENU_CURSOR_ROW;
@@ -420,9 +540,6 @@ void Menu_init(void)
 
 void Menu_Task(void)
 {
-    /* 串口中断只组帧，完整 LoRa 帧由主循环复制和发布。 */
-    LoraRemote_Task();
-
     if(menu.entered == 0U)
     {
         menu_emergency_stop();
@@ -434,9 +551,13 @@ void Menu_Task(void)
         menu.entered = 1U;
     }
 
-    if(menu.mode == CAR_MODE_TEST)
+    if(menu.mode == CAR_MODE_TRACK)
     {
-        TestMode_Task();
+        ReverseTrackMode_Task();
+    }
+    else if(menu.mode == CAR_MODE_SAVE_POINT)
+    {
+        SavePointMode_Task();
     }
     if((menu.mode < CAR_MODE_COUNT) && (g_mode_hooks[menu.mode].task != 0))
     {
@@ -454,6 +575,11 @@ void Menu_100msTask(void)
 {
     MenuPage_e next_page;
 
+    if(menu.mode == CAR_MODE_SAVE_POINT)
+    {
+        SavePointMode_100msTask();
+    }
+
     /*
      * 该函数只在 CPU0 主循环的 100 ms 菜单任务中调用。
      * 上电先显示状态页 2 秒，再按锁存的启动模式进入工作页面。
@@ -466,6 +592,10 @@ void Menu_100msTask(void)
             next_page = MENU_PAGE_SYSTEM;
             if(menu.mode == CAR_MODE_REMOTE) { next_page = MENU_PAGE_REMOTE; }
             else if(menu.mode == CAR_MODE_TEST) { next_page = MENU_PAGE_TEST; }
+            else if(menu.mode == CAR_MODE_SAVE_POINT)
+            {
+                next_page = MENU_PAGE_SAVE_POINT;
+            }
             menu.page = next_page;
         }
     }
@@ -474,7 +604,13 @@ void Menu_100msTask(void)
 void Control_5msCallback(void)
 {
     /* 本函数只做实时控制，不访问 IPS200，也不修改菜单页面。 */
+    /* UART2 and the complete LoRa control path are owned by CPU2. */
+    LoraRemote_Task();
     LoraRemote_5msCallback();
+
+    /* Ordered CPU2 chain: encoder -> Ackermann telemetry -> mode control ->
+     * final motor/steering PID and PWM. */
+    Ackermann_port_5ms_callback();
 
     /* Menu_Task 完成安全 enter 之前，不允许任何电机闭环运行。 */
     if(menu.entered == 0U)
@@ -483,6 +619,7 @@ void Control_5msCallback(void)
     }
     if(menu.mode == CAR_MODE_TEST)
     {
+        TestMode_Task();
         TestMode_5msCallback();
     }
     else if(menu.mode == CAR_MODE_REMOTE)
@@ -491,11 +628,14 @@ void Control_5msCallback(void)
     }
     else if(menu.mode == CAR_MODE_SAVE_POINT)
     {
-        //RemoteMode_5msCallback();
+        /* RemoteMode is the sole motor owner; SavePointMode only samples
+         * navigation and handles S3/S4 recording commands. */
+        RemoteMode_5msCallback();
+        SavePointMode_5msCallback();
     }
     else if(menu.mode == CAR_MODE_TRACK)
     {
-        //RemoteMode_5msCallback();
+        ReverseTrackMode_5msCallback();
     }
 }
 
@@ -503,7 +643,9 @@ void Menu_Display(void)
 {
     MenuPage_e current_page = menu.page;
 
-    if((current_page != MENU_PAGE_REMOTE) && (current_page != MENU_PAGE_TEST))
+    if((current_page != MENU_PAGE_REMOTE) &&
+       (current_page != MENU_PAGE_TEST) &&
+       (current_page != MENU_PAGE_SAVE_POINT))
     {
         current_page = MENU_PAGE_SYSTEM;
     }
@@ -523,6 +665,10 @@ void Menu_Display(void)
         {
             Menu_DisplayPage(g_test_page, menu.cursor_row);
         }
+        else if(current_page == MENU_PAGE_SAVE_POINT)
+        {
+            Menu_DisplayPage(g_save_point_page, menu.cursor_row);
+        }
         else
         {
             Menu_DisplayPage(g_system_page, menu.cursor_row);
@@ -538,6 +684,10 @@ void Menu_Display(void)
     else if(current_page == MENU_PAGE_TEST)
     {
         menu_display_test_data();
+    }
+    else if(current_page == MENU_PAGE_SAVE_POINT)
+    {
+        menu_display_save_point_data();
     }
     else
     {

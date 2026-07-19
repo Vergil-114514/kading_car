@@ -100,8 +100,8 @@ typedef struct
  */
 typedef struct
 {
-    float target_rad_s;       /**< 鐩爣杞�燂紝鍗曚綅 rad/s銆� */
-    float measured_rad_s;     /**< encoder.c 璁＄畻鍑虹殑瀹為檯杞�燂紝鍗曚綅 rad/s銆� */
+    float target_mps;       /**< 鐩爣杞�燂紝鍗曚綅 m/s銆� */
+    float measured_mps;     /**< encoder.c 璁＄畻鍑虹殑瀹為檯杞�燂紝鍗曚綅 m/s銆� */
     float feedforward_pwm;    /**< 鍙�夊墠棣� PWM锛屼笉浣跨敤鏃跺～ 0銆� */
     float output_sign;        /**< 鐢垫満杈撳嚭鏂瑰悜锛岃礋鏁拌〃绀哄弽鐩革紝闈炶礋鏁拌〃绀哄悓鐩搞�� */
     float pwm_limit;          /**< 鏈杩愯鐨勫畨鍏ㄩ檺骞咃紱<=0 鏃朵娇鐢� PID 鍙傛暟鍐呴檺骞呫�� */
@@ -111,9 +111,9 @@ typedef struct
 /** @brief 鍗曚釜鍚庤疆閫熷害鐜渶杩戜竴娆¤绠楃粨鏋滐紝渚涜彍鍗曞拰閬ユ祴鏄剧ず銆� */
 typedef struct
 {
-    float target_rad_s;
-    float measured_rad_s;
-    float error_rad_s;
+    float target_mps;
+    float measured_mps;
+    float error_mps;
     float pwm;
 } MOTOR_REAR_SPEED_STATUS;
 

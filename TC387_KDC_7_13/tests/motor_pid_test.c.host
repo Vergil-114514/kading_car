@@ -34,6 +34,9 @@ int main(void)
 {
     MOTOR_PID_GAIN left_gain = {100.0f, 0.0f, 0.0f, 0.0f, 500.0f, 0.0f};
     MOTOR_PID_GAIN right_gain = {100.0f, 0.0f, 0.0f, 0.0f, 500.0f, 0.0f};
+    MOTOR_PID_GAIN default_steering;
+    MOTOR_PID_GAIN default_left;
+    MOTOR_PID_GAIN default_right;
     MOTOR_PID_GAIN read_left;
     MOTOR_PID_GAIN read_right;
     MOTOR_REAR_SPEED_INPUT left = {2.0f, 1.0f, 0.0f, 1.0f, 300.0f, 1U};
@@ -42,6 +45,21 @@ int main(void)
     MOTOR_REAR_SPEED_STATUS right_status;
 
     motor_init();
+    Servo_init();
+    Motor_get_default_pid_gains(&default_steering,
+                                &default_left,
+                                &default_right);
+    assert(nearly_equal(default_left.kp, 2750.0f));
+    assert(nearly_equal(default_left.ki, 600.0f));
+    assert(nearly_equal(default_left.deadband, 0.01f));
+    assert(nearly_equal(default_right.kp, default_left.kp));
+    assert(nearly_equal(car_angle, 76.9921875f));
+    assert(nearly_equal(servo_duty.motor_speed, 76.9921875f));
+    Servo_set_angle(-100.0f);
+    assert(nearly_equal(servo_duty.motor_speed, 52.91015625f));
+    Servo_set_angle(200.0f);
+    assert(nearly_equal(servo_duty.motor_speed, 104.765625f));
+
     Motor_set_rear_speed_pid_gains(&left_gain, &right_gain);
     Motor_get_rear_speed_pid_gains(&read_left, &read_right);
     assert(nearly_equal(read_left.kp, 100.0f));
@@ -49,20 +67,20 @@ int main(void)
 
     Motor_rear_speed_control(&left, &right, 0U);
     Motor_get_rear_speed_status(&left_status, &right_status);
-    assert(nearly_equal(left_status.error_rad_s, 1.0f));
+    assert(nearly_equal(left_status.error_mps, 1.0f));
     assert(nearly_equal(left_status.pwm, 100.0f));
     assert(nearly_equal(right_status.pwm, -200.0f));
 
     /* 本次运行限幅必须小于 PID 参数上限时仍然生效。 */
-    left.target_rad_s = 10.0f;
-    left.measured_rad_s = 0.0f;
+    left.target_mps = 10.0f;
+    left.measured_mps = 0.0f;
     Motor_rear_speed_control(&left, &right, 0U);
     Motor_get_rear_speed_status(&left_status, 0);
     assert(nearly_equal(left_status.pwm, 300.0f));
 
     /* 禁止主动制动时，正目标下的负 PWM 应被钳为 0。 */
-    left.target_rad_s = 1.0f;
-    left.measured_rad_s = 3.0f;
+    left.target_mps = 1.0f;
+    left.measured_mps = 3.0f;
     Motor_rear_speed_control(&left, &right, 0U);
     Motor_get_rear_speed_status(&left_status, 0);
     assert(nearly_equal(left_status.pwm, 0.0f));

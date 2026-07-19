@@ -6,53 +6,45 @@
 
 1. TAU1201 的有效 GPS 位置转换为局部平面坐标。
 2. GPS 更新时，按当前航向和 `gps_delay_s` 对位置做延迟前推。
-3. IMU963RA 以 5 ms 周期运行 Madgwick 6DOF 姿态解算。
+3. IMU963RA 在 CPU1 以 5 ms 周期运行 Mahony 6DOF 姿态解算。
 4. 两次 GPS 更新之间，按航向和当前速度递推位置。
 5. 编码器有效时优先使用有符号编码器速度；未接编码器时自动回退到 GPS 速度。
 
-当 `CPU0_USE_GPS` 为 `0` 时，导航会从局部坐标 `(0, 0)` 启动，使用 IMU 航向和
+当 `CPU1_USE_GPS` 为 `0` 时，导航会从局部坐标 `(0, 0)` 启动，使用 IMU 航向和
 后轮编码器有符号速度进行相对航位推算；此时坐标不具有绝对经纬度参考，累计误差也不会被 GPS 修正。
 
 TopSpeed 原文件后半段的位置 KF、互补滤波和 CTRV 没有进入实际运行链，并且存在时间戳混用、除零、角度单位、脉冲累计和协方差更新错误，因此没有把这些实验分支标成可用代码移入 TC387。
 
 ## 当前接入点
 
-- `cpu0_main.c` 通过 `CPU0_NAVIGATION_SOLUTION` 在 Mahony、Fusion 和
-  GPS_INS 三种姿态/航向后端之间选择；三者共用编码器坐标递推层。
-- `cpu0_main.c` 通过 `CPU0_USE_GPS` 选择 IMU+编码器惯导或 GPS/INS 融合，
+- `cpu0_main.c` 将 `CPU1_NAVIGATION_SOLUTION` 固定为 Mahony，CPU1 的 5 ms
+  中断直接用相对 yaw 与后轮编码器速度积分存点局部 `X/Y`。
+- `cpu0_main.c` 通过 `CPU1_USE_GPS` 选择通用导航是否启用 GPS 修正，
   并在启用 GPS 时于主循环解析 GNSS。
-- `isr.c` 的 `CCU61_CH0` 每 5 ms 调用一次导航更新。
+- `isr.c` 的 `CCU60_CH1` 由 CPU1 每 5 ms 调用一次导航和存点坐标更新。
+- `isr.c` 的 `CCU61_CH0` 由 CPU2 每 5 ms 依次执行 LoRa、编码器、Ackermann、
+  模式控制、PID 和最终 PWM。
 - UART3 GNSS 接收中断继续使用逐飞库已有的 `gnss_uart_callback()`。
 - PIT 优先级改为 43～46，避开模板中 UART6/UART8 的 30～33。
 - UART3/11 RX 优先级提高到 50/51，高于导航 PIT；GNSS 回调会在 UART FIFO 内逐句处理，避免 NMEA 粘包。
 - `zf_device_gnss.c` 按 TopSpeed 的实际用法只保留 10 Hz RMC 输出；坏帧会安全丢弃并恢复接收，不会卡死后续定位。GGA 因此默认关闭。
 - TASKING Debug/Release 浮点模型均改为 `fastDouble`，避免经纬度在求局部坐标前被压成单精度。
 
-## 三种解算后端选择
+## 存点使用的姿态后端
 
-在 `user/cpu0_main.c` 中只修改 `CPU0_NAVIGATION_SOLUTION`：
+存点局部坐标要求使用 Mahony yaw，`user/cpu0_main.c` 已固定为：
 
 ```c
-/* Mahony 6DOF */
-#define CPU0_NAVIGATION_SOLUTION (NAVIGATION_SOLUTION_MAHONY)
-
-/* 或 x-io Fusion AHRS */
-#define CPU0_NAVIGATION_SOLUTION (NAVIGATION_SOLUTION_FUSION)
-
-/* 或原 GPS_INS/Madgwick，工程默认值 */
-#define CPU0_NAVIGATION_SOLUTION (NAVIGATION_SOLUTION_GPS_INS)
+#define CPU1_NAVIGATION_SOLUTION (NAVIGATION_SOLUTION_MAHONY)
 ```
 
-Mahony、Fusion 和 GPS_INS 在本工程中负责计算姿态与车辆航向。后轮编码器提供
-有符号车速，统一位置层按航向递推局部 `X/Y`；`CPU0_USE_GPS=1` 时，TAU1201
-再对局部位置和速度进行校正。因此切换后端不会改变菜单、控制器或坐标读取接口。
-
-三种模式都以 5 ms 更新。Mahony 和 GPS_INS 使用加速度计与陀螺仪；当前 Fusion
-接法同样采用无磁力计更新，以避免三种模式混用不同的磁场标定条件。上电期间车辆
-必须静止，完成陀螺仪零偏标定后再运动。
+按下 S3 后，CPU1 把当时的 Mahony 航向定义为相对 `0°`，并清零存点坐标。
+之后每个 5 ms 周期计算 `dx=v*sin(yaw)*dt`、`dy=v*cos(yaw)*dt`。这里的
+`v` 是 CPU2 发布的左右后轮平均有符号速度，GPS 不会修正这套存点坐标。
+上电期间车辆必须静止，完成陀螺仪零偏标定后再运动。
 
 GPS 启用时，首次有效 GPS 会自动成为局部坐标原点。也可以在
-`TopSpeed_GPS_INS_PortInit(CPU0_USE_GPS, CPU0_NAVIGATION_SOLUTION)` 返回后、启动 PIT 前手动设置
+`TopSpeed_GPS_INS_PortInit(CPU1_USE_GPS, CPU1_NAVIGATION_SOLUTION)` 返回后、启动 PIT 前手动设置
 （不能在 `PortInit()` 之前调用，初始化会清空适配层状态）：
 
 ```c

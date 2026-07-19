@@ -1,0 +1,801 @@
+#include <assert.h>
+#include <stdarg.h>
+#include <stdio.h>
+
+#include "reverse_track_mode.h"
+
+#define TEST_STEERING_CENTER_DEG       (76.9921875f)
+#define TEST_EPSILON                   (0.0005f)
+#define TEST_PRINTF_CAPTURE_COUNT      (8U)
+#define TEST_PRINTF_LINE_LENGTH        (96U)
+
+#if (TRACK_MODE_DIRECTION == TRACK_DIRECTION_FORWARD)
+    #define TEST_TRAVEL_SIGN           (1.0f)
+    #if (TRACK_FORWARD_PARK_ENABLE != 0U)
+        #define TEST_DIRECTION_NAME    "forward_parking_mode_test: PASS"
+    #else
+        #define TEST_DIRECTION_NAME    "forward_track_mode_test: PASS"
+    #endif
+#else
+    #define TEST_TRAVEL_SIGN           (-1.0f)
+    #define TEST_DIRECTION_NAME        "reverse_track_mode_test: PASS"
+#endif
+
+uint16 IMU_savenum;
+float IMU_X[FLASH_IMU_POINT_CAPACITY];
+float IMU_Y[FLASH_IMU_POINT_CAPACITY];
+MOTOR_DUTY servo_duty;
+
+static TopSpeed_GPS_INS_Output g_navigation;
+static ACKERMANN_CONTROL_TELEMETRY g_telemetry;
+static MOTOR_REAR_SPEED_STATUS g_left_status;
+static MOTOR_REAR_SPEED_STATUS g_right_status;
+static float g_servo_angle = TEST_STEERING_CENTER_DEG;
+static float g_mock_max_wheel_speed_mps = ACKERMANN_MAX_WHEEL_SPEED_MPS;
+static uint8 g_ackermann_enabled;
+static uint8 g_left_enabled;
+static uint8 g_right_enabled;
+static uint8 g_steering_enabled;
+static uint8 g_allow_active_braking;
+static unsigned g_data_read_count;
+static unsigned g_point_read_count;
+static unsigned g_motor_stop_count;
+static unsigned g_motor_pid_reset_count;
+static unsigned g_servo_pid_reset_count;
+static unsigned g_printf_line_count;
+static char g_printf_lines[TEST_PRINTF_CAPTURE_COUNT]
+                          [TEST_PRINTF_LINE_LENGTH];
+
+static float test_absf(float value)
+{
+    return (value < 0.0f) ? -value : value;
+}
+
+static uint8 nearly_equal(float first, float second, float tolerance)
+{
+    return (uint8)(test_absf(first - second) <= tolerance);
+}
+
+int reverse_track_test_printf(const char *format, ...)
+{
+    char discarded_line[TEST_PRINTF_LINE_LENGTH];
+    char *destination = discarded_line;
+    va_list arguments;
+    int length;
+
+    if(g_printf_line_count < TEST_PRINTF_CAPTURE_COUNT)
+    {
+        destination = g_printf_lines[g_printf_line_count];
+    }
+    va_start(arguments, format);
+    length = vsnprintf(destination,
+                       TEST_PRINTF_LINE_LENGTH,
+                       format,
+                       arguments);
+    va_end(arguments);
+    assert(length > 0);
+    assert((unsigned)length < TEST_PRINTF_LINE_LENGTH);
+    ++g_printf_line_count;
+    return length;
+}
+
+void DATA_READ(void)
+{
+    ++g_data_read_count;
+}
+
+void IMU_POINT_READ(void)
+{
+    ++g_point_read_count;
+}
+
+void TopSpeed_GPS_INS_PortGetOutput(TopSpeed_GPS_INS_Output *output)
+{
+    *output = g_navigation;
+}
+
+void Ackermann_get_default_config(ACKERMANN_CONTROL_CONFIG *config)
+{
+    memset(config, 0, sizeof(*config));
+    config->wheelbase_m = ACKERMANN_WHEELBASE_M;
+    config->track_width_m = ACKERMANN_TRACK_WIDTH_M;
+    config->control_period_s = ACKERMANN_CONTROL_PERIOD_S;
+    config->left_encoder_sign = 1.0f;
+    config->right_encoder_sign = 1.0f;
+    config->left_motor_sign = 1.0f;
+    config->right_motor_sign = 1.0f;
+    config->max_steering_angle_rad = 30.0f * ACKERMANN_DEG_TO_RAD;
+    config->max_vehicle_speed_mps = 3.0f;
+    config->max_acceleration_mps2 = 1.5f;
+    config->max_wheel_speed_mps = g_mock_max_wheel_speed_mps;
+    config->stop_speed_threshold_mps = 0.02f;
+    config->allow_active_braking = 0U;
+    config->steering_center_encoder_deg = TEST_STEERING_CENTER_DEG;
+    config->steering_encoder_deg_per_road_deg = 1.0f;
+    config->steering_sign = 1.0f;
+}
+
+void Ackermann_control_enable(uint8 enable)
+{
+    g_ackermann_enabled = enable;
+}
+
+void Ackermann_get_telemetry(ACKERMANN_CONTROL_TELEMETRY *telemetry)
+{
+    *telemetry = g_telemetry;
+}
+
+float Ackermann_get_steering_center(void)
+{
+    return TEST_STEERING_CENTER_DEG;
+}
+
+void Ackermann_electronic_differential(
+    float center_speed_mps,
+    float steering_angle_rad,
+    const ACKERMANN_CONTROL_CONFIG *config,
+    float *left_speed_mps,
+    float *right_speed_mps)
+{
+    float yaw_rate_rad_s = center_speed_mps * tanf(steering_angle_rad)
+                         / config->wheelbase_m;
+
+    *left_speed_mps = center_speed_mps
+                    - yaw_rate_rad_s * config->track_width_m * 0.5f;
+    *right_speed_mps = center_speed_mps
+                     + yaw_rate_rad_s * config->track_width_m * 0.5f;
+}
+
+float Ackermann_road_steering_to_encoder_angle_deg(
+    float road_steering_rad,
+    const ACKERMANN_CONTROL_CONFIG *config)
+{
+    return config->steering_center_encoder_deg
+         + config->steering_sign * road_steering_rad
+         * ACKERMANN_RAD_TO_DEG
+         * config->steering_encoder_deg_per_road_deg;
+}
+
+float Ackermann_encoder_angle_to_road_steering_rad(
+    float encoder_angle_deg,
+    const ACKERMANN_CONTROL_CONFIG *config)
+{
+    return (encoder_angle_deg - config->steering_center_encoder_deg)
+         / (config->steering_sign
+          * config->steering_encoder_deg_per_road_deg)
+         * ACKERMANN_DEG_TO_RAD;
+}
+
+void Motor_rear_speed_pid_reset(void)
+{
+    memset(&g_left_status, 0, sizeof(g_left_status));
+    memset(&g_right_status, 0, sizeof(g_right_status));
+    ++g_motor_pid_reset_count;
+}
+
+static void mock_motor_update(const MOTOR_REAR_SPEED_INPUT *input,
+                              MOTOR_REAR_SPEED_STATUS *status)
+{
+    float pwm;
+
+    status->target_mps = input->target_mps;
+    status->measured_mps = input->measured_mps;
+    status->error_mps = input->target_mps - input->measured_mps;
+    if(input->enabled == 0U)
+    {
+        status->pwm = 0.0f;
+        return;
+    }
+
+    pwm = status->error_mps * 100.0f + input->feedforward_pwm;
+    if(pwm > input->pwm_limit) { pwm = input->pwm_limit; }
+    if(pwm < -input->pwm_limit) { pwm = -input->pwm_limit; }
+    status->pwm = pwm * input->output_sign;
+}
+
+void Motor_rear_speed_control(const MOTOR_REAR_SPEED_INPUT *left,
+                              const MOTOR_REAR_SPEED_INPUT *right,
+                              uint8 allow_active_braking)
+{
+    g_allow_active_braking = allow_active_braking;
+    mock_motor_update(left, &g_left_status);
+    mock_motor_update(right, &g_right_status);
+}
+
+void Motor_get_rear_speed_status(MOTOR_REAR_SPEED_STATUS *left_status,
+                                 MOTOR_REAR_SPEED_STATUS *right_status)
+{
+    *left_status = g_left_status;
+    *right_status = g_right_status;
+}
+
+void Motor_enable_channels(uint8 left_enable,
+                           uint8 right_enable,
+                           uint8 steering_enable)
+{
+    g_left_enabled = left_enable;
+    g_right_enabled = right_enable;
+    g_steering_enabled = steering_enable;
+}
+
+void Motor_stop_all(void)
+{
+    g_left_enabled = 0U;
+    g_right_enabled = 0U;
+    g_steering_enabled = 0U;
+    memset(&g_left_status, 0, sizeof(g_left_status));
+    memset(&g_right_status, 0, sizeof(g_right_status));
+    ++g_motor_stop_count;
+}
+
+void Servo_pid_reset(void)
+{
+    ++g_servo_pid_reset_count;
+}
+
+void Servo_set_angle(float angle_deg)
+{
+    servo_duty.motor_speed = angle_deg;
+}
+
+void Servo_position_control(MOTOR_DUTY *duty)
+{
+    (void)duty;
+}
+
+float Servo_get_angle(void)
+{
+    return g_servo_angle;
+}
+
+static void reset_mock_state(void)
+{
+    memset(IMU_X, 0, sizeof(IMU_X));
+    memset(IMU_Y, 0, sizeof(IMU_Y));
+    memset(&g_navigation, 0, sizeof(g_navigation));
+    memset(&g_telemetry, 0, sizeof(g_telemetry));
+    memset(&g_left_status, 0, sizeof(g_left_status));
+    memset(&g_right_status, 0, sizeof(g_right_status));
+    memset(&servo_duty, 0, sizeof(servo_duty));
+    g_servo_angle = TEST_STEERING_CENTER_DEG;
+    IMU_savenum = 0U;
+    g_mock_max_wheel_speed_mps = ACKERMANN_MAX_WHEEL_SPEED_MPS;
+    g_ackermann_enabled = 1U;
+    g_left_enabled = 0U;
+    g_right_enabled = 0U;
+    g_steering_enabled = 0U;
+    g_allow_active_braking = 1U;
+    g_data_read_count = 0U;
+    g_point_read_count = 0U;
+    g_motor_stop_count = 0U;
+    g_motor_pid_reset_count = 0U;
+    g_servo_pid_reset_count = 0U;
+    g_printf_line_count = 0U;
+    memset(g_printf_lines, 0, sizeof(g_printf_lines));
+}
+
+static void set_valid_sensors(void)
+{
+    g_navigation.initialized = 1U;
+    g_navigation.valid = 1U;
+    g_navigation.heading_valid = 1U;
+    g_navigation.encoder_valid = 1U;
+    g_telemetry.encoder_valid = 1U;
+}
+
+static void make_straight_route(uint16 point_count, float spacing_m)
+{
+    uint16 index;
+
+    IMU_savenum = point_count;
+    for(index = 0U; index < point_count; ++index)
+    {
+        IMU_X[index] = 0.0f;
+        IMU_Y[index] = (float)index * spacing_m;
+    }
+}
+
+static ReverseTrackModeStatus_t get_status(void)
+{
+    ReverseTrackModeStatus_t status;
+
+    memset(&status, 0, sizeof(status));
+    ReverseTrackMode_GetStatus(&status);
+    return status;
+}
+
+static ReverseTrackModeStatus_t start_straight_route(uint16 point_count,
+                                                     float spacing_m)
+{
+    ReverseTrackModeStatus_t status;
+
+    make_straight_route(point_count, spacing_m);
+    set_valid_sensors();
+    ReverseTrackMode_Init();
+    ReverseTrackMode_Enter();
+    status = get_status();
+    assert(status.state == REVERSE_TRACK_STATE_WAIT_NAV);
+    assert(status.route_valid != 0U);
+    ReverseTrackMode_5msCallback();
+    status = get_status();
+    assert(status.state == REVERSE_TRACK_STATE_RUNNING);
+    assert(status.outputs_enabled != 0U);
+    return status;
+}
+
+static void expect_route_fault(ReverseTrackFault_e expected_fault)
+{
+    ReverseTrackModeStatus_t status;
+
+    ReverseTrackMode_Init();
+    ReverseTrackMode_Enter();
+    status = get_status();
+    assert(status.state == REVERSE_TRACK_STATE_ROUTE_FAULT);
+    assert(status.fault == expected_fault);
+    assert(status.outputs_enabled == 0U);
+}
+
+static void test_route_validation(void)
+{
+    reset_mock_state();
+    expect_route_fault(REVERSE_TRACK_FAULT_POINT_COUNT);
+    assert(g_data_read_count == 1U && g_point_read_count == 1U);
+
+    reset_mock_state();
+    IMU_savenum = 1U;
+    expect_route_fault(REVERSE_TRACK_FAULT_POINT_COUNT);
+
+    reset_mock_state();
+    IMU_savenum = FLASH_IMU_POINT_CAPACITY + 1U;
+    expect_route_fault(REVERSE_TRACK_FAULT_POINT_COUNT);
+    assert(g_printf_line_count == 3U);
+    assert(strcmp(g_printf_lines[0],
+                  "TRACK_POINT_BEGIN,1025\r\n") == 0);
+    assert(strcmp(g_printf_lines[1],
+                  "TRACK_POINT_ERROR,POINT_COUNT,1025,1024\r\n") == 0);
+    assert(strcmp(g_printf_lines[2], "TRACK_POINT_END,0\r\n") == 0);
+
+    reset_mock_state();
+    IMU_savenum = 3U;
+    IMU_X[0] = IMU_X[1] = IMU_X[2] = 2.0f;
+    IMU_Y[0] = IMU_Y[1] = IMU_Y[2] = -1.0f;
+    expect_route_fault(REVERSE_TRACK_FAULT_ZERO_LENGTH_ROUTE);
+
+    reset_mock_state();
+    make_straight_route(3U, 0.5f);
+    IMU_X[1] = NAN;
+    expect_route_fault(REVERSE_TRACK_FAULT_POINT_VALUE);
+
+    reset_mock_state();
+    IMU_savenum = 4U;
+    IMU_Y[0] = 0.0f;
+    IMU_Y[1] = 0.5f;
+    IMU_Y[2] = 0.5f;
+    IMU_Y[3] = 1.0f;
+    ReverseTrackMode_Init();
+    ReverseTrackMode_Enter();
+    assert(get_status().route_valid != 0U);
+
+    reset_mock_state();
+    make_straight_route(FLASH_IMU_POINT_CAPACITY, 0.01f);
+    ReverseTrackMode_Init();
+    ReverseTrackMode_Enter();
+    assert(get_status().point_count == FLASH_IMU_POINT_CAPACITY);
+    assert(get_status().route_valid != 0U);
+}
+
+static void test_loaded_points_are_printed(void)
+{
+    reset_mock_state();
+    IMU_savenum = 3U;
+    IMU_X[0] = 0.0f;
+    IMU_Y[0] = 0.0f;
+    IMU_X[1] = 0.25f;
+    IMU_Y[1] = 0.50f;
+    IMU_X[2] = -0.75f;
+    IMU_Y[2] = 1.00f;
+
+    ReverseTrackMode_Init();
+    ReverseTrackMode_Enter();
+
+    assert(g_printf_line_count == 5U);
+    assert(strcmp(g_printf_lines[0], "TRACK_POINT_BEGIN,3\r\n") == 0);
+    assert(strcmp(g_printf_lines[1],
+                  "TRACK_POINT,0,0.000,0.000\r\n") == 0);
+    assert(strcmp(g_printf_lines[2],
+                  "TRACK_POINT,1,0.250,0.500\r\n") == 0);
+    assert(strcmp(g_printf_lines[3],
+                  "TRACK_POINT,2,-0.750,1.000\r\n") == 0);
+    assert(strcmp(g_printf_lines[4], "TRACK_POINT_END,3\r\n") == 0);
+}
+
+static void test_start_without_lora_and_straight_speed(void)
+{
+    ReverseTrackModeStatus_t status;
+    unsigned index;
+
+    reset_mock_state();
+    make_straight_route(21U, 0.5f);
+    ReverseTrackMode_Init();
+    ReverseTrackMode_Enter();
+    assert(g_ackermann_enabled == 0U);
+    assert(get_status().state == REVERSE_TRACK_STATE_WAIT_NAV);
+    ReverseTrackMode_5msCallback();
+    status = get_status();
+    assert(status.state == REVERSE_TRACK_STATE_WAIT_NAV);
+    assert(status.outputs_enabled == 0U);
+
+    set_valid_sensors();
+    ReverseTrackMode_5msCallback();
+    status = get_status();
+    assert(status.state == REVERSE_TRACK_STATE_RUNNING);
+    assert(g_motor_pid_reset_count == 1U);
+    assert(g_servo_pid_reset_count == 1U);
+    assert(g_left_enabled != 0U && g_right_enabled != 0U);
+    assert(g_steering_enabled != 0U);
+    assert(nearly_equal(status.ramped_speed_mps,
+                        TEST_TRAVEL_SIGN * 0.0075f,
+                        TEST_EPSILON));
+    assert(nearly_equal(status.target_speed_mps,
+                        TEST_TRAVEL_SIGN * REVERSE_TRACK_MAX_SPEED_MPS,
+                        TEST_EPSILON));
+    assert(nearly_equal(status.lookahead_distance_m,
+                        REVERSE_TRACK_LOOKAHEAD_MIN_M,
+                        TEST_EPSILON));
+#if (TRACK_MODE_DIRECTION == TRACK_DIRECTION_FORWARD)
+    assert(nearly_equal(status.local_y_m, 0.0f, TEST_EPSILON));
+    assert(nearly_equal(status.lookahead_y_m, 0.75f, TEST_EPSILON));
+#else
+    assert(nearly_equal(status.local_y_m, 10.0f, TEST_EPSILON));
+    assert(nearly_equal(status.lookahead_y_m, 9.25f, TEST_EPSILON));
+#endif
+    assert(nearly_equal(status.remaining_distance_m, 10.0f, TEST_EPSILON));
+    assert(nearly_equal(status.left_target_mps,
+                        status.right_target_mps,
+                        TEST_EPSILON));
+    assert(status.left_target_mps * TEST_TRAVEL_SIGN > 0.0f);
+    assert(nearly_equal(status.steering_encoder_target_deg,
+                        TEST_STEERING_CENTER_DEG,
+                        TEST_EPSILON));
+    assert(g_allow_active_braking == 0U);
+
+    g_telemetry.measured_vehicle_speed_mps = TEST_TRAVEL_SIGN * 3.0f;
+    for(index = 0U; index < 500U; ++index)
+    {
+        ReverseTrackMode_5msCallback();
+    }
+    status = get_status();
+    assert(nearly_equal(status.lookahead_distance_m, 3.0f, TEST_EPSILON));
+    assert(test_absf(status.target_speed_mps) <=
+           REVERSE_TRACK_MAX_SPEED_MPS + TEST_EPSILON);
+    assert(nearly_equal(status.ramped_speed_mps,
+                        TEST_TRAVEL_SIGN * REVERSE_TRACK_MAX_SPEED_MPS,
+                        0.01f));
+}
+
+static void test_steering_sign_and_curve_limit(void)
+{
+    ReverseTrackModeStatus_t status;
+
+    reset_mock_state();
+    start_straight_route(21U, 0.5f);
+    g_navigation.position_m.x = 1.0f;
+    ReverseTrackMode_5msCallback();
+    status = get_status();
+    assert(status.curvature_inv_m > 0.0f);
+    assert(status.steering_target_rad > 0.0f);
+    assert(nearly_equal(status.steering_target_rad,
+                        REVERSE_TRACK_MAX_STEERING_RATE_DPS
+                      * ACKERMANN_DEG_TO_RAD
+                      * ACKERMANN_CONTROL_PERIOD_S,
+                        TEST_EPSILON));
+    assert(status.steering_encoder_target_deg > TEST_STEERING_CENTER_DEG);
+    assert(status.left_target_mps * TEST_TRAVEL_SIGN > 0.0f);
+    assert(status.right_target_mps * TEST_TRAVEL_SIGN > 0.0f);
+    assert(nearly_equal(status.left_target_mps,
+                        status.right_target_mps,
+                        TEST_EPSILON));
+
+    /* Differential follows the measured encoder, not the pure-pursuit target. */
+    g_servo_angle = TEST_STEERING_CENTER_DEG + 10.0f;
+    ReverseTrackMode_5msCallback();
+    status = get_status();
+#if (TRACK_MODE_DIRECTION == TRACK_DIRECTION_FORWARD)
+    assert(status.left_target_mps < status.right_target_mps);
+#else
+    assert(status.left_target_mps > status.right_target_mps);
+#endif
+    assert(test_absf(status.target_speed_mps) <
+           REVERSE_TRACK_MAX_SPEED_MPS);
+    assert(test_absf(status.target_speed_mps) <=
+           sqrtf(REVERSE_TRACK_MAX_LATERAL_ACCEL_MPS2 /
+                 test_absf(status.curvature_inv_m)) + TEST_EPSILON);
+
+    reset_mock_state();
+    start_straight_route(21U, 0.5f);
+    g_navigation.position_m.x = -1.0f;
+    g_servo_angle = TEST_STEERING_CENTER_DEG - 10.0f;
+    ReverseTrackMode_5msCallback();
+    status = get_status();
+    assert(status.curvature_inv_m < 0.0f);
+    assert(status.steering_target_rad < 0.0f);
+    assert(status.steering_encoder_target_deg < TEST_STEERING_CENTER_DEG);
+#if (TRACK_MODE_DIRECTION == TRACK_DIRECTION_FORWARD)
+    assert(status.left_target_mps > status.right_target_mps);
+#else
+    assert(status.left_target_mps < status.right_target_mps);
+#endif
+}
+
+static void test_end_limit_and_wheel_scaling(void)
+{
+    ReverseTrackModeStatus_t status;
+    float expected_limit_mps;
+    float largest_target;
+    unsigned index;
+
+    reset_mock_state();
+    status = start_straight_route(3U, 0.5f);
+    expected_limit_mps = sqrtf(2.0f * REVERSE_TRACK_ACCELERATION_MPS2
+                             * (1.0f - REVERSE_TRACK_STOP_DISTANCE_M));
+    assert(nearly_equal(status.target_speed_mps,
+                        TEST_TRAVEL_SIGN * expected_limit_mps,
+                        TEST_EPSILON));
+
+    reset_mock_state();
+    g_mock_max_wheel_speed_mps = 0.05f;
+    start_straight_route(21U, 0.5f);
+    g_navigation.position_m.x = 1.0f;
+    for(index = 0U; index < 200U; ++index)
+    {
+        ReverseTrackMode_5msCallback();
+    }
+    status = get_status();
+    largest_target = test_absf(status.left_target_mps);
+    if(test_absf(status.right_target_mps) > largest_target)
+    {
+        largest_target = test_absf(status.right_target_mps);
+    }
+    assert(largest_target <= g_mock_max_wheel_speed_mps + TEST_EPSILON);
+    assert(nearly_equal(largest_target,
+                        g_mock_max_wheel_speed_mps,
+                        TEST_EPSILON));
+    assert(nearly_equal(status.steering_target_rad,
+                        REVERSE_TRACK_MAX_STEERING_DEG
+                      * ACKERMANN_DEG_TO_RAD,
+                        TEST_EPSILON));
+}
+
+static void test_alignment_progress_and_completion(void)
+{
+#if (TRACK_MODE_DIRECTION == TRACK_DIRECTION_FORWARD) && \
+    (TRACK_FORWARD_PARK_ENABLE != 0U)
+    ReverseTrackModeStatus_t status;
+    float start_x_m = 0.0f;
+    float start_y_m = 0.9f;
+    float target_heading_rad = TRACK_PARK_TARGET_YAW_DEG
+                             * ACKERMANN_DEG_TO_RAD;
+    float chord_x_m = TRACK_PARK_TARGET_X_M - start_x_m;
+    float chord_y_m = TRACK_PARK_TARGET_Y_M - start_y_m;
+    float chord_length_m = sqrtf(chord_x_m * chord_x_m
+                               + chord_y_m * chord_y_m);
+    float handle_length_m = chord_length_m
+                          * TRACK_PARK_BEZIER_HANDLE_RATIO;
+    float control1_x_m;
+    float control1_y_m;
+    float control2_x_m;
+    float control2_y_m;
+    float one_minus_t;
+    float derivative_x;
+    float derivative_y;
+    float t;
+    unsigned step;
+
+    if(handle_length_m < TRACK_PARK_BEZIER_HANDLE_MIN_M)
+    {
+        handle_length_m = TRACK_PARK_BEZIER_HANDLE_MIN_M;
+    }
+    if(handle_length_m > TRACK_PARK_BEZIER_HANDLE_MAX_M)
+    {
+        handle_length_m = TRACK_PARK_BEZIER_HANDLE_MAX_M;
+    }
+    control1_x_m = start_x_m;
+    control1_y_m = start_y_m - handle_length_m;
+    control2_x_m = TRACK_PARK_TARGET_X_M
+                 + sinf(target_heading_rad) * handle_length_m;
+    control2_y_m = TRACK_PARK_TARGET_Y_M
+                 + cosf(target_heading_rad) * handle_length_m;
+
+    reset_mock_state();
+    status = start_straight_route(3U, 0.5f);
+    assert(status.state == REVERSE_TRACK_STATE_RUNNING);
+
+    /* Finish the forward route, then wait until forward motion has stopped. */
+    g_navigation.position_m.y = start_y_m;
+    ReverseTrackMode_5msCallback();
+    status = get_status();
+    assert(status.state == REVERSE_TRACK_STATE_WAIT_PARK_STOP);
+    assert(status.outputs_enabled == 0U);
+    assert(status.parking_active == 0U);
+
+    g_telemetry.measured_vehicle_speed_mps = 0.2f;
+    ReverseTrackMode_5msCallback();
+    assert(get_status().state == REVERSE_TRACK_STATE_WAIT_PARK_STOP);
+    g_telemetry.measured_vehicle_speed_mps = 0.0f;
+    ReverseTrackMode_5msCallback();
+    status = get_status();
+    assert(status.state == REVERSE_TRACK_STATE_PARKING);
+    assert(status.parking_active != 0U);
+    assert(status.outputs_enabled != 0U);
+    assert(status.target_speed_mps < 0.0f);
+    assert(status.target_speed_mps >=
+           -TRACK_PARK_MAX_REVERSE_SPEED_MPS - TEST_EPSILON);
+
+    /* Follow the same sampled Bezier path and verify the configured final yaw. */
+    for(step = 1U; step < TRACK_PARK_PATH_POINT_COUNT; ++step)
+    {
+        t = (float)step / (float)(TRACK_PARK_PATH_POINT_COUNT - 1U);
+        one_minus_t = 1.0f - t;
+        g_navigation.position_m.x =
+            one_minus_t * one_minus_t * one_minus_t * start_x_m
+          + 3.0f * one_minus_t * one_minus_t * t * control1_x_m
+          + 3.0f * one_minus_t * t * t * control2_x_m
+          + t * t * t * TRACK_PARK_TARGET_X_M;
+        g_navigation.position_m.y =
+            one_minus_t * one_minus_t * one_minus_t * start_y_m
+          + 3.0f * one_minus_t * one_minus_t * t * control1_y_m
+          + 3.0f * one_minus_t * t * t * control2_y_m
+          + t * t * t * TRACK_PARK_TARGET_Y_M;
+        derivative_x =
+            3.0f * one_minus_t * one_minus_t
+            * (control1_x_m - start_x_m)
+          + 6.0f * one_minus_t * t * (control2_x_m - control1_x_m)
+          + 3.0f * t * t * (TRACK_PARK_TARGET_X_M - control2_x_m);
+        derivative_y =
+            3.0f * one_minus_t * one_minus_t
+            * (control1_y_m - start_y_m)
+          + 6.0f * one_minus_t * t * (control2_y_m - control1_y_m)
+          + 3.0f * t * t * (TRACK_PARK_TARGET_Y_M - control2_y_m);
+        g_navigation.heading_deg = atan2f(-derivative_x, -derivative_y)
+                                 * ACKERMANN_RAD_TO_DEG;
+        ReverseTrackMode_5msCallback();
+        status = get_status();
+        if(status.state == REVERSE_TRACK_STATE_WAIT_PARK_COMPLETE)
+        {
+            break;
+        }
+        assert(status.state == REVERSE_TRACK_STATE_PARKING);
+        assert(status.segment_index >= 1U);
+    }
+
+    status = get_status();
+    assert(status.state == REVERSE_TRACK_STATE_WAIT_PARK_COMPLETE);
+    assert(status.outputs_enabled == 0U);
+    assert(status.parking_position_error_m <=
+           TRACK_PARK_POSITION_TOLERANCE_M + TEST_EPSILON);
+    assert(status.parking_heading_error_deg <=
+           TRACK_PARK_HEADING_TOLERANCE_DEG + TEST_EPSILON);
+    ReverseTrackMode_5msCallback();
+    status = get_status();
+    assert(status.state == REVERSE_TRACK_STATE_COMPLETED);
+    assert(status.fault == REVERSE_TRACK_FAULT_NONE);
+#else
+    ReverseTrackModeStatus_t status;
+    uint16 previous_segment;
+    unsigned step;
+    unsigned running_step_count;
+
+    reset_mock_state();
+    make_straight_route(21U, 0.5f);
+    set_valid_sensors();
+    g_navigation.position_m.x = 17.0f;
+    g_navigation.position_m.y = -4.0f;
+    g_navigation.heading_deg = 90.0f;
+    ReverseTrackMode_Init();
+    ReverseTrackMode_Enter();
+    ReverseTrackMode_5msCallback();
+    status = get_status();
+    assert(nearly_equal(status.local_x_m, 0.0f, TEST_EPSILON));
+#if (TRACK_MODE_DIRECTION == TRACK_DIRECTION_FORWARD)
+    assert(nearly_equal(status.local_y_m, 0.0f, TEST_EPSILON));
+#else
+    assert(nearly_equal(status.local_y_m, 10.0f, TEST_EPSILON));
+#endif
+    previous_segment = status.segment_index;
+    running_step_count = (unsigned)((10.0f
+                                   - REVERSE_TRACK_STOP_DISTANCE_M
+                                   - 0.01f) / 0.5f);
+
+    for(step = 1U; step <= running_step_count; ++step)
+    {
+#if (TRACK_MODE_DIRECTION == TRACK_DIRECTION_FORWARD)
+        /* Heading is east, so forward travel increases navigation X. */
+        g_navigation.position_m.x = 17.0f + 0.5f * (float)step;
+#else
+        /* Heading is east, so reversing travel decreases navigation X. */
+        g_navigation.position_m.x = 17.0f - 0.5f * (float)step;
+#endif
+        ReverseTrackMode_5msCallback();
+        status = get_status();
+#if (TRACK_MODE_DIRECTION == TRACK_DIRECTION_FORWARD)
+        assert(status.segment_index >= previous_segment);
+#else
+        assert(status.segment_index <= previous_segment);
+#endif
+        previous_segment = status.segment_index;
+        assert(status.state == REVERSE_TRACK_STATE_RUNNING);
+    }
+
+#if (TRACK_MODE_DIRECTION == TRACK_DIRECTION_FORWARD)
+    g_navigation.position_m.x = 17.0f + 9.9f;
+#else
+    g_navigation.position_m.x = 17.0f - 9.9f;
+#endif
+    ReverseTrackMode_5msCallback();
+    status = get_status();
+    assert(status.state == REVERSE_TRACK_STATE_COMPLETED);
+    assert(status.fault == REVERSE_TRACK_FAULT_NONE);
+    assert(status.outputs_enabled == 0U);
+    assert(status.left_target_mps == 0.0f);
+    assert(status.right_target_mps == 0.0f);
+
+    g_navigation.position_m.x = 17.0f;
+    ReverseTrackMode_5msCallback();
+    assert(get_status().state == REVERSE_TRACK_STATE_COMPLETED);
+    assert(g_left_enabled == 0U && g_right_enabled == 0U);
+#endif
+}
+
+static void test_latched_sensor_faults(void)
+{
+    ReverseTrackModeStatus_t status;
+
+    reset_mock_state();
+    start_straight_route(21U, 0.5f);
+    g_navigation.heading_valid = 0U;
+    ReverseTrackMode_5msCallback();
+    status = get_status();
+    assert(status.state == REVERSE_TRACK_STATE_SENSOR_FAULT);
+    assert(status.fault == REVERSE_TRACK_FAULT_NAVIGATION);
+    ReverseTrackMode_Enter();
+    ReverseTrackMode_5msCallback();
+    assert(get_status().state == REVERSE_TRACK_STATE_SENSOR_FAULT);
+    assert(g_left_enabled == 0U && g_right_enabled == 0U);
+
+    reset_mock_state();
+    start_straight_route(21U, 0.5f);
+    g_telemetry.encoder_valid = 0U;
+    ReverseTrackMode_5msCallback();
+    status = get_status();
+    assert(status.state == REVERSE_TRACK_STATE_SENSOR_FAULT);
+    assert(status.fault == REVERSE_TRACK_FAULT_ENCODER);
+
+    reset_mock_state();
+    start_straight_route(21U, 0.5f);
+    g_navigation.position_m.x = NAN;
+    ReverseTrackMode_5msCallback();
+    status = get_status();
+    assert(status.state == REVERSE_TRACK_STATE_SENSOR_FAULT);
+    assert(status.fault == REVERSE_TRACK_FAULT_NAVIGATION);
+
+    reset_mock_state();
+    start_straight_route(21U, 0.5f);
+    g_telemetry.left_measured_mps = NAN;
+    ReverseTrackMode_5msCallback();
+    status = get_status();
+    assert(status.state == REVERSE_TRACK_STATE_SENSOR_FAULT);
+    assert(status.fault == REVERSE_TRACK_FAULT_ENCODER);
+}
+
+int main(void)
+{
+    test_route_validation();
+    test_loaded_points_are_printed();
+    test_start_without_lora_and_straight_speed();
+    test_steering_sign_and_curve_limit();
+    test_end_limit_and_wheel_scaling();
+    test_alignment_progress_and_completion();
+    test_latched_sensor_faults();
+    puts(TEST_DIRECTION_NAME);
+    return 0;
+}

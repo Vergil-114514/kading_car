@@ -45,11 +45,11 @@
 #define CCU6_0_CH1_INT_SERVICE  IfxSrc_Tos_cpu1     // CPU1：5 ms 惯导/组合定位
 #define CCU6_0_CH1_ISR_PRIORITY 44
 
-#define CCU6_1_CH0_INT_SERVICE  IfxSrc_Tos_cpu2     // CPU2：5 ms 模式控制和电机输出
-#define CCU6_1_CH0_ISR_PRIORITY 45                  // 低于 Ackermann 解算中断
+#define CCU6_1_CH0_INT_SERVICE  IfxSrc_Tos_cpu2     // CPU2：统一 5 ms 遥控/Ackermann/PID/PWM
+#define CCU6_1_CH0_ISR_PRIORITY 45
 
-#define CCU6_1_CH1_INT_SERVICE  IfxSrc_Tos_cpu2     // CPU2：5 ms Ackermann/编码器解算
-#define CCU6_1_CH1_ISR_PRIORITY 46                  // 高于 CCU61_CH0 控制中断
+#define CCU6_1_CH1_INT_SERVICE  IfxSrc_Tos_cpu2     // 保留；当前未启动该 PIT 通道
+#define CCU6_1_CH1_ISR_PRIORITY 46
 
 
 
@@ -91,9 +91,9 @@
 #define UART1_RX_INT_PRIO       14
 #define UART1_ER_INT_PRIO       15
 
-#define UART2_INT_SERVICE       IfxSrc_Tos_cpu0
+#define UART2_INT_SERVICE       IfxSrc_Tos_cpu2     // LoRa UART and control share CPU2
 #define UART2_TX_INT_PRIO       16
-#define UART2_RX_INT_PRIO       17
+#define UART2_RX_INT_PRIO       50                  // Preempt the 5 ms control PIT
 #define UART2_ER_INT_PRIO       18
 
 #define UART3_INT_SERVICE       IfxSrc_Tos_cpu1     // GNSS 串口由 CPU1 响应

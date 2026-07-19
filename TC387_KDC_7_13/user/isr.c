@@ -66,7 +66,7 @@ IFX_INTERRUPT(cc61_pit_ch0_isr, CCU6_1_CH0_INT_VECTAB_NUM, CCU6_1_CH0_ISR_PRIORI
     interrupt_global_enable(0);                     // 开启中断嵌套
     pit_clear_flag(CCU61_CH0);
 
-    /* CPU2：LoRa 失联保护以及测试/遥控模式的电机控制。 */
+    /* CPU2：LoRa、编码器、Ackermann、模式逻辑、PID 和最终 PWM。 */
     Control_5msCallback();
 }
 
@@ -74,9 +74,7 @@ IFX_INTERRUPT(cc61_pit_ch1_isr, CCU6_1_CH1_INT_VECTAB_NUM, CCU6_1_CH1_ISR_PRIORI
 {
     interrupt_global_enable(0);                     // 开启中断嵌套
     pit_clear_flag(CCU61_CH1);
-
-    /* CPU2：先采编码器，再进行 Stanley、电子差速和闭环 PID 解算。 */
-    Ackermann_port_5ms_callback();
+    /* Reserved. CPU2 control is unified in CCU61_CH0. */
 }
 // **************************** PIT中断函数 ****************************
 // **************************** 外部中断函数 ****************************

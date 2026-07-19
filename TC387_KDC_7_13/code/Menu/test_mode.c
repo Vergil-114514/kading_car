@@ -9,15 +9,15 @@
  * 为避免台架测试误动作，只有“LoRa 有效且恰好一个拨码开启”时才会使能输出。
  */
 
-/* 固定控制周期和后轮目标角速度斜坡。 */
+/* 固定控制周期和后轮目标线速度斜坡。 */
 #define TEST_CONTROL_DT                 (0.005f)
-#define TEST_WHEEL_ACCEL_RAD_S2         (20.0f)
-/* 小于该角速度视为停止，速度 PID 输出及积分直接清零。 */
-#define TEST_STOP_RAD_S                 (0.05f)
+#define TEST_WHEEL_ACCEL_MPS2           (4.0f)
+/* 小于该线速度视为停止，速度 PID 输出及积分直接清零。 */
+#define TEST_STOP_MPS                   (0.01f)
 /* 后轮速度环每按一次 +/- 键的 Kp、Ki、Kd 步长。 */
-#define TEST_REAR_KP_STEP               (10.0f)
-#define TEST_REAR_KI_STEP               (5.0f)
-#define TEST_REAR_KD_STEP               (0.1f)
+#define TEST_REAR_KP_STEP               (50.0f)
+#define TEST_REAR_KI_STEP               (25.0f)
+#define TEST_REAR_KD_STEP               (0.5f)
 /* 转向位置环量纲不同，因此使用更小的独立调节步长。 */
 #define TEST_STEER_KP_STEP              (1.0f)
 #define TEST_STEER_KI_STEP              (0.1f)
@@ -146,7 +146,7 @@ static float test_pid_update(TestSpeedPidState_t *state,
     uint8_t saturating;
 
     /* 零速时清空历史状态，防止积分残留让车轮继续转动。 */
-    if(test_absf(target) <= TEST_STOP_RAD_S)
+    if(test_absf(target) <= TEST_STOP_MPS)
     {
         test_pid_reset(state);
         return 0.0f;
@@ -288,15 +288,15 @@ static void test_run_rear_speed_control(float left_target,
     MOTOR_REAR_SPEED_INPUT left_input;
     MOTOR_REAR_SPEED_INPUT right_input;
 
-    left_input.target_rad_s = left_target;
-    left_input.measured_rad_s = left_measured;
+    left_input.target_mps = left_target;
+    left_input.measured_mps = left_measured;
     left_input.feedforward_pwm = 0.0f;
     left_input.output_sign = g_vehicle_config.left_motor_sign;
     left_input.pwm_limit = TEST_MODE_REAR_PWM_LIMIT;
     left_input.enabled = left_enabled;
 
-    right_input.target_rad_s = right_target;
-    right_input.measured_rad_s = right_measured;
+    right_input.target_mps = right_target;
+    right_input.measured_mps = right_measured;
     right_input.feedforward_pwm = 0.0f;
     right_input.output_sign = g_vehicle_config.right_motor_sign;
     right_input.pwm_limit = TEST_MODE_REAR_PWM_LIMIT;
@@ -402,44 +402,55 @@ static void test_run_drive(const LoraRemoteState_t *remote,
                            float throttle_input)
 {
     float center_speed = throttle_input * TEST_MODE_DRIVE_MAX_SPEED_MPS;
-    float steering_rad = steer_input * TEST_MODE_MAX_STEERING_DEG
-                       * ACKERMANN_DEG_TO_RAD;
+    float steering_rad = Ackermann_encoder_angle_to_road_steering_rad(
+        Servo_get_angle(),
+        &g_vehicle_config);
     float left_mps;
     float right_mps;
     float left_target;
     float right_target;
+    float largest_target;
+    float target_scale;
     MOTOR_REAR_SPEED_STATUS left_motor_status;
     MOTOR_REAR_SPEED_STATUS right_motor_status;
-    float steering_target = g_steering_center_deg
-                          + steer_input * TEST_MODE_MAX_STEERING_DEG;
+    float steering_target = Ackermann_road_steering_to_encoder_angle_deg(
+        steer_input * TEST_MODE_MAX_STEERING_DEG * ACKERMANN_DEG_TO_RAD,
+        &g_vehicle_config);
 
     /* remote 已在调用者中完成归一化，保留参数便于以后扩展按键限速。 */
     (void)remote;
     /* 根据阿克曼几何计算弯道内外侧后轮应有的线速度差。 */
     Ackermann_electronic_differential(center_speed, steering_rad,
                                       &g_vehicle_config, &left_mps, &right_mps);
-    /* v/r 转换为编码器速度环目标 rad/s，并进行独立限幅。 */
-    left_target = test_clampf(left_mps / g_vehicle_config.wheel_radius_m,
-                              -TEST_MODE_MAX_WHEEL_RAD_S,
-                              TEST_MODE_MAX_WHEEL_RAD_S);
-    right_target = test_clampf(right_mps / g_vehicle_config.wheel_radius_m,
-                               -TEST_MODE_MAX_WHEEL_RAD_S,
-                               TEST_MODE_MAX_WHEEL_RAD_S);
+    /* 保留左右轮速度比，按同一比例限制最大线速度。 */
+    left_target = left_mps;
+    right_target = right_mps;
+    largest_target = test_absf(left_target);
+    if(test_absf(right_target) > largest_target)
+    {
+        largest_target = test_absf(right_target);
+    }
+    if(largest_target > TEST_MODE_MAX_WHEEL_SPEED_MPS)
+    {
+        target_scale = TEST_MODE_MAX_WHEEL_SPEED_MPS / largest_target;
+        left_target *= target_scale;
+        right_target *= target_scale;
+    }
     /* 限制目标变化速度，避免测试时突然满杆造成机械冲击。 */
     g_left_ramped_target = test_approach(
         g_left_ramped_target, left_target,
-        TEST_WHEEL_ACCEL_RAD_S2 * TEST_CONTROL_DT);
+        TEST_WHEEL_ACCEL_MPS2 * TEST_CONTROL_DT);
     g_right_ramped_target = test_approach(
         g_right_ramped_target, right_target,
-        TEST_WHEEL_ACCEL_RAD_S2 * TEST_CONTROL_DT);
+        TEST_WHEEL_ACCEL_MPS2 * TEST_CONTROL_DT);
     /* 左右轮各自使用自己的参数、积分状态和编码器反馈。 */
     test_run_rear_speed_control(
         g_left_ramped_target,
         g_right_ramped_target,
-        telemetry->left_measured_rad_s,
-        telemetry->right_measured_rad_s,
-        (test_absf(g_left_ramped_target) > TEST_STOP_RAD_S) ? 1U : 0U,
-        (test_absf(g_right_ramped_target) > TEST_STOP_RAD_S) ? 1U : 0U,
+        telemetry->left_measured_mps,
+        telemetry->right_measured_mps,
+        (test_absf(g_left_ramped_target) > TEST_STOP_MPS) ? 1U : 0U,
+        (test_absf(g_right_ramped_target) > TEST_STOP_MPS) ? 1U : 0U,
         &left_motor_status,
         &right_motor_status);
     /* 转向电机使用位置编码器闭环，不使用电流采样。 */
@@ -447,13 +458,13 @@ static void test_run_drive(const LoraRemoteState_t *remote,
     Servo_position_control(&servo_duty);
 
     /* 整车测试页面中 A=左后轮，B=右后轮，转向单独显示。 */
-    g_status.target_a = left_motor_status.target_rad_s;
-    g_status.measured_a = left_motor_status.measured_rad_s;
-    g_status.error_a = left_motor_status.error_rad_s;
+    g_status.target_a = left_motor_status.target_mps;
+    g_status.measured_a = left_motor_status.measured_mps;
+    g_status.error_a = left_motor_status.error_mps;
     g_status.pwm_a = left_motor_status.pwm;
-    g_status.target_b = right_motor_status.target_rad_s;
-    g_status.measured_b = right_motor_status.measured_rad_s;
-    g_status.error_b = right_motor_status.error_rad_s;
+    g_status.target_b = right_motor_status.target_mps;
+    g_status.measured_b = right_motor_status.measured_mps;
+    g_status.error_b = right_motor_status.error_mps;
     g_status.pwm_b = right_motor_status.pwm;
     g_status.steering_target_deg = steering_target;
     g_status.steering_measured_deg = Servo_get_angle();
@@ -466,7 +477,7 @@ void TestMode_Init(void)
     MOTOR_PID_GAIN left_motor_gain;
     MOTOR_PID_GAIN right_motor_gain;
 
-    /* 加载轴距 0.8 m、轮距 1.0 m、轮半径 0.2 m 及默认 PID。 */
+    /* 加载实测轴距 0.58 m、后轮轮距 0.60 m 及 m/s 后轮 PID。 */
     Ackermann_get_default_config(&g_vehicle_config);
     g_steering_gain = g_vehicle_config.steering_position_pid;
     g_left_gain = g_vehicle_config.left_speed_pid;
@@ -485,6 +496,7 @@ void TestMode_Init(void)
                                               0.0f,
                                               TEST_MODE_REAR_PWM_LIMIT);
     g_steering_center_deg = Ackermann_get_steering_center();
+    g_vehicle_config.steering_center_encoder_deg = g_steering_center_deg;
     for(i = 0U; i < 4U; ++i) { g_previous_key[i] = 0U; }
     g_active = 0U;
     g_outputs_enabled = 0U;
@@ -510,6 +522,7 @@ void TestMode_Task(void)
     TestModeChannel_e channel;
     uint8_t i;
 
+    /* Called by the unified CPU2 5 ms control ISR before motor PID. */
     if(g_active == 0U) { return; }
     LoraRemote_GetState(&remote);
     if(remote.link_ok == 0U)
@@ -590,7 +603,7 @@ void TestMode_5msCallback(void)
 
     /* 一次读取本周期的两个后轮编码器速度快照。 */
     Ackermann_get_telemetry(&telemetry);
-    /* 摇杆死区和满量程处理统一由 LoRa 适配层完成；左、上为正。 */
+    /* 左摇杆 X 控制转向，右摇杆 Y 控制速度；左推、上推为正。 */
     steer_input = LoraRemote_NormalizeAxis(
         remote.joystick[LORA_REMOTE_STEERING_AXIS_INDEX])
         * LORA_REMOTE_STEERING_SIGN;
@@ -601,12 +614,14 @@ void TestMode_5msCallback(void)
     if(requested == TEST_MODE_CHANNEL_STEERING)
     {
         /* SW0：左摇杆 X 给出中心 +/-20 度目标，仅运行转向位置环。 */
-        target = g_steering_center_deg
-               + steer_input * TEST_MODE_MAX_STEERING_DEG;
+        target = Ackermann_road_steering_to_encoder_angle_deg(
+            steer_input * TEST_MODE_MAX_STEERING_DEG
+                        * ACKERMANN_DEG_TO_RAD,
+            &g_vehicle_config);
         /* 显式写零，形成除硬件通道禁用之外的第二重保护。 */
         test_run_rear_speed_control(0.0f, 0.0f,
-                                    telemetry.left_measured_rad_s,
-                                    telemetry.right_measured_rad_s,
+                                    telemetry.left_measured_mps,
+                                    telemetry.right_measured_mps,
                                     0U, 0U,
                                     &left_motor_status,
                                     &right_motor_status);
@@ -622,44 +637,44 @@ void TestMode_5msCallback(void)
     }
     else if(requested == TEST_MODE_CHANNEL_LEFT_REAR)
     {
-        /* SW1：左摇杆 Y 给出左后轮 +/-10 rad/s 目标。 */
-        target = throttle_input * TEST_MODE_MAX_WHEEL_RAD_S;
+        /* SW1：右摇杆 Y 给出左后轮 +/-2 m/s 目标。 */
+        target = throttle_input * TEST_MODE_MAX_WHEEL_SPEED_MPS;
         g_left_ramped_target = test_approach(
             g_left_ramped_target, target,
-            TEST_WHEEL_ACCEL_RAD_S2 * TEST_CONTROL_DT);
+            TEST_WHEEL_ACCEL_MPS2 * TEST_CONTROL_DT);
         test_run_rear_speed_control(
             g_left_ramped_target, 0.0f,
-            telemetry.left_measured_rad_s,
-            telemetry.right_measured_rad_s,
-            (test_absf(g_left_ramped_target) > TEST_STOP_RAD_S) ? 1U : 0U,
+            telemetry.left_measured_mps,
+            telemetry.right_measured_mps,
+            (test_absf(g_left_ramped_target) > TEST_STOP_MPS) ? 1U : 0U,
             0U,
             &left_motor_status,
             &right_motor_status);
         /* 未测试的右后轮始终明确写 0。 */
-        g_status.target_a = left_motor_status.target_rad_s;
-        g_status.measured_a = left_motor_status.measured_rad_s;
-        g_status.error_a = left_motor_status.error_rad_s;
+        g_status.target_a = left_motor_status.target_mps;
+        g_status.measured_a = left_motor_status.measured_mps;
+        g_status.error_a = left_motor_status.error_mps;
         g_status.pwm_a = left_motor_status.pwm;
     }
     else if(requested == TEST_MODE_CHANNEL_RIGHT_REAR)
     {
-        /* SW2：左摇杆 Y 给出右后轮 +/-10 rad/s 目标。 */
-        target = throttle_input * TEST_MODE_MAX_WHEEL_RAD_S;
+        /* SW2：右摇杆 Y 给出右后轮 +/-2 m/s 目标。 */
+        target = throttle_input * TEST_MODE_MAX_WHEEL_SPEED_MPS;
         g_right_ramped_target = test_approach(
             g_right_ramped_target, target,
-            TEST_WHEEL_ACCEL_RAD_S2 * TEST_CONTROL_DT);
+            TEST_WHEEL_ACCEL_MPS2 * TEST_CONTROL_DT);
         test_run_rear_speed_control(
             0.0f, g_right_ramped_target,
-            telemetry.left_measured_rad_s,
-            telemetry.right_measured_rad_s,
+            telemetry.left_measured_mps,
+            telemetry.right_measured_mps,
             0U,
-            (test_absf(g_right_ramped_target) > TEST_STOP_RAD_S) ? 1U : 0U,
+            (test_absf(g_right_ramped_target) > TEST_STOP_MPS) ? 1U : 0U,
             &left_motor_status,
             &right_motor_status);
         /* 未测试的左后轮始终明确写 0。 */
-        g_status.target_a = right_motor_status.target_rad_s;
-        g_status.measured_a = right_motor_status.measured_rad_s;
-        g_status.error_a = right_motor_status.error_rad_s;
+        g_status.target_a = right_motor_status.target_mps;
+        g_status.measured_a = right_motor_status.measured_mps;
+        g_status.error_a = right_motor_status.error_mps;
         g_status.pwm_a = right_motor_status.pwm;
     }
     else
@@ -736,11 +751,11 @@ void TestMode_Display(void)
     else if(status.channel == TEST_MODE_CHANNEL_DRIVE)
     {
         /* 联合测试同时展示左右后轮和转向三组闭环数据。 */
-        ips200_show_string(0U, 42U, "L Tar/Mea/PWM");
+        ips200_show_string(0U, 42U, "L m/s Tar/Mea/PWM");
         ips200_show_float(0U, 60U, status.target_a, 6U, 2U);
         ips200_show_float(72U, 60U, status.measured_a, 6U, 2U);
         ips200_show_int(150U, 60U, (int32)status.pwm_a, 6U);
-        ips200_show_string(0U, 80U, "R Tar/Mea/PWM");
+        ips200_show_string(0U, 80U, "R m/s Tar/Mea/PWM");
         ips200_show_float(0U, 98U, status.target_b, 6U, 2U);
         ips200_show_float(72U, 98U, status.measured_b, 6U, 2U);
         ips200_show_int(150U, 98U, (int32)status.pwm_b, 6U);
@@ -752,11 +767,17 @@ void TestMode_Display(void)
     else
     {
         /* 单电机页面展示目标、反馈、误差、PWM 及当前 PID。 */
-        ips200_show_string(0U, 42U, "Target:");
+        ips200_show_string(0U, 42U,
+            (status.channel == TEST_MODE_CHANNEL_STEERING)
+            ? "Target deg:" : "Target m/s:");
         ips200_show_float(72U, 42U, status.target_a, 8U, 2U);
-        ips200_show_string(0U, 62U, "Measure:");
+        ips200_show_string(0U, 62U,
+            (status.channel == TEST_MODE_CHANNEL_STEERING)
+            ? "Measure deg:" : "Measure m/s:");
         ips200_show_float(72U, 62U, status.measured_a, 8U, 2U);
-        ips200_show_string(0U, 82U, "Error:");
+        ips200_show_string(0U, 82U,
+            (status.channel == TEST_MODE_CHANNEL_STEERING)
+            ? "Error deg:" : "Error m/s:");
         ips200_show_float(72U, 82U, status.error_a, 8U, 2U);
         ips200_show_string(0U, 102U, "PWM:");
         ips200_show_int(72U, 102U, (int32)status.pwm_a, 8U);

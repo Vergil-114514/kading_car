@@ -30,13 +30,7 @@ uint8_t Ackermann_port_init(void)
 
 void Ackermann_port_start_periodic(void)
 {
-#if ACKERMANN_PORT_ENABLE
-    if(g_ackermann_port_ready != ZF_FALSE)
-    {
-        /* CCU61_CH1 专用于 CPU2 Ackermann 解算，不占用 CPU0 系统节拍。 */
-        pit_ms_init(CCU61_CH1, ACKERMANN_CONTROL_PERIOD_MS);
-    }
-#endif
+    /* The unified CPU2 CCU61_CH0 control ISR owns this 5 ms callback. */
 }
 
 void Ackermann_port_5ms_callback(void)
@@ -49,9 +43,11 @@ void Ackermann_port_5ms_callback(void)
         return;
     }
 
-    /* encoder.c 负责读取三路编码器，PID 直接使用 car_speed[]。 */
+    /* Encoder feedback and the complete rear-wheel controller use m/s. */
     GetSpeed();
-    Ackermann_control_step(car_speed[1], car_speed[2], ZF_TRUE);
+    Ackermann_control_step(car_speed[1],
+                           car_speed[2],
+                           ZF_TRUE);
     Ackermann_get_telemetry(&telemetry);
     if(telemetry.encoder_valid != ZF_FALSE)
     {

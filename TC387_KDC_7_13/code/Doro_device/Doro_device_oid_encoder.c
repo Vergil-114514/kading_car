@@ -12,7 +12,7 @@ void oid_encoder_init (void)
     // 1. 初始化硬件 SPI
     // 根据欧艾迪手册时序图：时钟空闲为高电平(CPOL=1)，在第二个跳变沿(上升沿)采样(CPHA=1)，对应 SPI_MODE_3
     // 注意：片选参数填 SPI_CS_NULL，意在使用软件手动控制 CS
-    spi_init(OID_ENCODER_SPI_N, SPI_MODE3, OID_ENCODER_BAUDRATE, OID_ENCODER_SPI_SCK, OID_ENCODER_SPI_MOSI, OID_ENCODER_SPI_MISO, SPI_CS_NULL);
+    spi_init(OID_ENCODER_SPI_N, SPI_MODE2, OID_ENCODER_BAUDRATE, OID_ENCODER_SPI_SCK, OID_ENCODER_SPI_MOSI, OID_ENCODER_SPI_MISO, SPI_CS_NULL);
 
     // 2. 将 CS 初始化为普通推挽输出，并默认拉高（空闲状态）
     gpio_init(OID_ENCODER_CS_PIN, GPO, GPIO_HIGH, GPO_PUSH_PULL);
@@ -32,7 +32,7 @@ uint16 oid_encoder_get_angle (void)
     uint8 rx_buf[3] = {0, 0, 0};
     uint16 angle;
 
-    spi_init(OID_ENCODER_SPI_N, SPI_MODE3, OID_ENCODER_BAUDRATE, OID_ENCODER_SPI_SCK, OID_ENCODER_SPI_MOSI, OID_ENCODER_SPI_MISO, SPI_CS_NULL);
+    //spi_init(OID_ENCODER_SPI_N, SPI_MODE2, OID_ENCODER_BAUDRATE, OID_ENCODER_SPI_SCK, OID_ENCODER_SPI_MOSI, OID_ENCODER_SPI_MISO, SPI_CS_NULL);
 
     // 1. 手动拉低片选，启动 SPI 帧
     gpio_low(OID_ENCODER_CS_PIN);

@@ -1,0 +1,18 @@
+#include "reverse_track_mode.h"
+
+unsigned g_reverse_track_init_calls;
+unsigned g_reverse_track_enter_calls;
+unsigned g_reverse_track_task_calls;
+unsigned g_reverse_track_5ms_calls;
+unsigned g_reverse_track_exit_calls;
+ReverseTrackModeStatus_t g_reverse_track_status;
+
+void ReverseTrackMode_Init(void) { ++g_reverse_track_init_calls; }
+void ReverseTrackMode_Enter(void) { ++g_reverse_track_enter_calls; }
+void ReverseTrackMode_Task(void) { ++g_reverse_track_task_calls; }
+void ReverseTrackMode_5msCallback(void) { ++g_reverse_track_5ms_calls; }
+void ReverseTrackMode_Exit(void) { ++g_reverse_track_exit_calls; }
+void ReverseTrackMode_GetStatus(ReverseTrackModeStatus_t *status)
+{
+    if(status != 0) { *status = g_reverse_track_status; }
+}

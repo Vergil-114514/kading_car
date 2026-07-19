@@ -26,6 +26,8 @@
 #define ACKERMANN_DEG_TO_RAD  (ACKERMANN_PI / 180.0f)
 
 typedef uint32_t uint32;
+typedef uint8_t uint8;
+typedef int32_t int32;
 
 typedef struct
 {
@@ -41,9 +43,14 @@ typedef struct
 {
     float wheelbase_m;
     float track_width_m;
-    float wheel_radius_m;
+    float max_steering_angle_rad;
+    float max_vehicle_speed_mps;
+    float max_wheel_speed_mps;
     float left_motor_sign;
     float right_motor_sign;
+    float steering_center_encoder_deg;
+    float steering_encoder_deg_per_road_deg;
+    float steering_sign;
     ACKERMANN_PID_GAIN steering_position_pid;
     ACKERMANN_PID_GAIN left_speed_pid;
     ACKERMANN_PID_GAIN right_speed_pid;
@@ -51,8 +58,9 @@ typedef struct
 
 typedef struct
 {
-    float left_measured_rad_s;
-    float right_measured_rad_s;
+    float left_measured_mps;
+    float right_measured_mps;
+    uint8_t encoder_valid;
 } ACKERMANN_CONTROL_TELEMETRY;
 
 typedef struct
@@ -82,8 +90,8 @@ typedef struct
 
 typedef struct
 {
-    float target_rad_s;
-    float measured_rad_s;
+    float target_mps;
+    float measured_mps;
     float feedforward_pwm;
     float output_sign;
     float pwm_limit;
@@ -92,9 +100,9 @@ typedef struct
 
 typedef struct
 {
-    float target_rad_s;
-    float measured_rad_s;
-    float error_rad_s;
+    float target_mps;
+    float measured_mps;
+    float error_mps;
     float pwm;
 } MOTOR_REAR_SPEED_STATUS;
 
@@ -111,6 +119,7 @@ extern MOTOR_DUTY servo_duty;
 extern MOTOR_PID servo_position_pid;
 
 void Ackermann_control_enable(uint8_t enable);
+void Ackermann_port_5ms_callback(void);
 void Ackermann_get_default_config(ACKERMANN_CONTROL_CONFIG *config);
 void Ackermann_get_telemetry(ACKERMANN_CONTROL_TELEMETRY *telemetry);
 float Ackermann_get_steering_center(void);
@@ -119,6 +128,12 @@ void Ackermann_electronic_differential(float center_speed_mps,
                                        const ACKERMANN_CONTROL_CONFIG *config,
                                        float *left_speed_mps,
                                        float *right_speed_mps);
+float Ackermann_road_steering_to_encoder_angle_deg(
+    float road_steering_rad,
+    const ACKERMANN_CONTROL_CONFIG *config);
+float Ackermann_encoder_angle_to_road_steering_rad(
+    float encoder_angle_deg,
+    const ACKERMANN_CONTROL_CONFIG *config);
 void Ackermann_set_rear_speed_pid_gains(const ACKERMANN_PID_GAIN *left_gain,
                                         const ACKERMANN_PID_GAIN *right_gain);
 void Ackermann_get_rear_speed_pid_gains(ACKERMANN_PID_GAIN *left_gain,
@@ -170,6 +185,7 @@ void ips200_show_float(uint16_t x,
 #include "board_mode_switch.h"
 #include "remote_mode.h"
 #include "test_mode.h"
+#include "reverse_track_mode.h"
 #include "Menu.h"
 
 #endif

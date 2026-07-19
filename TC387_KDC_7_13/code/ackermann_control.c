@@ -13,8 +13,8 @@ typedef struct
 } MOTOR_DUTY;
 typedef struct
 {
-    float target_rad_s;
-    float measured_rad_s;
+    float target_mps;
+    float measured_mps;
     float feedforward_pwm;
     float output_sign;
     float pwm_limit;
@@ -22,9 +22,9 @@ typedef struct
 } MOTOR_REAR_SPEED_INPUT;
 typedef struct
 {
-    float target_rad_s;
-    float measured_rad_s;
-    float error_rad_s;
+    float target_mps;
+    float measured_mps;
+    float error_mps;
     float pwm;
 } MOTOR_REAR_SPEED_STATUS;
 extern MOTOR_DUTY servo_duty;
@@ -66,8 +66,8 @@ typedef struct
     float command_age_s;
     float speed_reference_mps;
     float steering_reference_rad;
-    float left_measured_rad_s;
-    float right_measured_rad_s;
+    float left_measured_mps;
+    float right_measured_mps;
     uint8_t initialized;
     uint8_t enabled;
 } ACKERMANN_CONTROL_STATE;
@@ -156,15 +156,14 @@ static uint8_t ack_config_is_valid(const ACKERMANN_CONTROL_CONFIG *config)
 
     if((config->wheelbase_m <= 0.0f)
     || (config->track_width_m <= 0.0f)
-    || (config->wheel_radius_m <= 0.0f)
     || (config->control_period_s <= 0.0f)
     || (config->stanley_softening_speed_mps <= 0.0f)
     || (config->max_steering_angle_rad <= 0.0f)
     || (config->max_steering_rate_rad_s <= 0.0f)
     || (config->max_vehicle_speed_mps <= 0.0f)
     || (config->max_acceleration_mps2 <= 0.0f)
-    || (config->max_wheel_speed_rad_s <= 0.0f)
-    || (config->steering_encoder_deg_per_road_deg == 0.0f))
+    || (config->max_wheel_speed_mps <= 0.0f)
+    || (config->steering_encoder_deg_per_road_deg <= 0.0f))
     {
         return ZF_FALSE;
     }
@@ -194,13 +193,13 @@ static void ack_clear_runtime(void)
 {
     g_ackermann.speed_reference_mps = 0.0f;
     g_ackermann.steering_reference_rad = 0.0f;
-    g_ackermann.left_measured_rad_s = 0.0f;
-    g_ackermann.right_measured_rad_s = 0.0f;
+    g_ackermann.left_measured_mps = 0.0f;
+    g_ackermann.right_measured_mps = 0.0f;
     Motor_rear_speed_pid_reset();
 
     g_ackermann.telemetry.ramped_speed_mps = 0.0f;
-    g_ackermann.telemetry.left_target_rad_s = 0.0f;
-    g_ackermann.telemetry.right_target_rad_s = 0.0f;
+    g_ackermann.telemetry.left_target_mps = 0.0f;
+    g_ackermann.telemetry.right_target_mps = 0.0f;
     g_ackermann.telemetry.left_pwm = 0.0f;
     g_ackermann.telemetry.right_pwm = 0.0f;
 }
@@ -218,7 +217,6 @@ void Ackermann_get_default_config(ACKERMANN_CONTROL_CONFIG *config)
 
     config->wheelbase_m = ACKERMANN_WHEELBASE_M;
     config->track_width_m = ACKERMANN_TRACK_WIDTH_M;
-    config->wheel_radius_m = ACKERMANN_WHEEL_RADIUS_M;
     config->control_period_s = ACKERMANN_CONTROL_PERIOD_S;
 
     config->left_encoder_sign = 1.0f;
@@ -234,15 +232,17 @@ void Ackermann_get_default_config(ACKERMANN_CONTROL_CONFIG *config)
 
     config->max_vehicle_speed_mps = 3.0f;
     config->max_acceleration_mps2 = 1.5f;
-    config->max_wheel_speed_rad_s = 25.0f;
+    config->max_wheel_speed_mps = ACKERMANN_MAX_WHEEL_SPEED_MPS;
     config->stop_speed_threshold_mps = 0.02f;
     config->command_timeout_s = 0.2f;
     /* Reverse torque can create a large current spike without current sensing. */
     config->allow_active_braking = ZF_FALSE;
 
-    config->steering_center_encoder_deg = -1.0f;
-    config->steering_encoder_deg_per_road_deg = 1.0f;
-    config->steering_sign = 1.0f;
+    config->steering_center_encoder_deg =
+        ACKERMANN_STEERING_CENTER_ENCODER_DEG;
+    config->steering_encoder_deg_per_road_deg =
+        ACKERMANN_STEERING_ENCODER_RATIO;
+    config->steering_sign = ACKERMANN_STEERING_SIGN;
 
     /* 三路电机 PID 的唯一默认参数源位于 motor.c。 */
     Motor_get_default_pid_gains(&steering_position_gain,
@@ -254,8 +254,8 @@ void Ackermann_get_default_config(ACKERMANN_CONTROL_CONFIG *config)
                             &left_rear_speed_gain);
     ack_copy_motor_pid_gain(&config->right_speed_pid,
                             &right_rear_speed_gain);
-    config->left_feedforward_pwm_per_rad_s = 0.0f;
-    config->right_feedforward_pwm_per_rad_s = 0.0f;
+    config->left_feedforward_pwm_per_mps = 0.0f;
+    config->right_feedforward_pwm_per_mps = 0.0f;
 }
 
 uint8_t Ackermann_control_init(const ACKERMANN_CONTROL_CONFIG *config)
@@ -454,8 +454,61 @@ void Ackermann_electronic_differential(float center_speed_mps,
                      + yaw_rate_rad_s * config->track_width_m * 0.5f;
 }
 
-void Ackermann_control_step(float left_measured_rad_s,
-                            float right_measured_rad_s,
+float Ackermann_road_steering_to_encoder_angle_deg(
+    float road_steering_rad,
+    const ACKERMANN_CONTROL_CONFIG *config)
+{
+    float limited_steering_rad;
+
+    if((config == 0)
+    || (config->steering_encoder_deg_per_road_deg <= 0.0f))
+    {
+        return 0.0f;
+    }
+
+    limited_steering_rad = road_steering_rad;
+    if(config->max_steering_angle_rad > 0.0f)
+    {
+        limited_steering_rad = ack_clampf(
+            limited_steering_rad,
+            -config->max_steering_angle_rad,
+            config->max_steering_angle_rad);
+    }
+    return config->steering_center_encoder_deg
+         + ack_sign(config->steering_sign)
+         * limited_steering_rad * ACKERMANN_RAD_TO_DEG
+         * config->steering_encoder_deg_per_road_deg;
+}
+
+float Ackermann_encoder_angle_to_road_steering_rad(
+    float encoder_angle_deg,
+    const ACKERMANN_CONTROL_CONFIG *config)
+{
+    float road_steering_rad;
+
+    if((config == 0)
+    || (config->steering_encoder_deg_per_road_deg <= 0.0f))
+    {
+        return 0.0f;
+    }
+
+    road_steering_rad =
+        (encoder_angle_deg - config->steering_center_encoder_deg)
+        / (ack_sign(config->steering_sign)
+         * config->steering_encoder_deg_per_road_deg)
+        * ACKERMANN_DEG_TO_RAD;
+    if(config->max_steering_angle_rad > 0.0f)
+    {
+        road_steering_rad = ack_clampf(
+            road_steering_rad,
+            -config->max_steering_angle_rad,
+            config->max_steering_angle_rad);
+    }
+    return road_steering_rad;
+}
+
+void Ackermann_control_step(float left_measured_mps,
+                            float right_measured_mps,
                             uint8_t encoder_feedback_valid)
 {
     ACKERMANN_PATH_COMMAND command;
@@ -470,10 +523,9 @@ void Ackermann_control_step(float left_measured_rad_s,
     float max_steering_step;
     float left_target_mps;
     float right_target_mps;
-    float left_target_rad_s;
-    float right_target_rad_s;
     float largest_wheel_target;
     float wheel_scale;
+    float measured_steering_rad;
     float steering_encoder_target_deg;
     uint8_t command_timed_out;
     uint8_t command_is_valid;
@@ -519,18 +571,21 @@ void Ackermann_control_step(float left_measured_rad_s,
         return;
     }
 
-    /* 速度换算和低通滤波都由 encoder.c 完成，PID 直接使用其输出。 */
-    g_ackermann.left_measured_rad_s =
-        left_measured_rad_s * g_ackermann.config.left_encoder_sign;
-    g_ackermann.right_measured_rad_s =
-        right_measured_rad_s * g_ackermann.config.right_encoder_sign;
+    /* 速度换算由 encoder.c 完成，PID 直接使用其 m/s 输出。 */
+    g_ackermann.left_measured_mps =
+        left_measured_mps * g_ackermann.config.left_encoder_sign;
+    g_ackermann.right_measured_mps =
+        right_measured_mps * g_ackermann.config.right_encoder_sign;
 
-    g_ackermann.telemetry.left_measured_rad_s = g_ackermann.left_measured_rad_s;
-    g_ackermann.telemetry.right_measured_rad_s = g_ackermann.right_measured_rad_s;
+    g_ackermann.telemetry.left_measured_mps = g_ackermann.left_measured_mps;
+    g_ackermann.telemetry.right_measured_mps = g_ackermann.right_measured_mps;
     g_ackermann.telemetry.measured_vehicle_speed_mps =
-        0.5f * g_ackermann.config.wheel_radius_m
-        * (g_ackermann.left_measured_rad_s + g_ackermann.right_measured_rad_s);
+        0.5f * (g_ackermann.left_measured_mps
+              + g_ackermann.right_measured_mps);
     g_ackermann.telemetry.steering_encoder_measured_deg = Servo_get_angle();
+    measured_steering_rad = Ackermann_encoder_angle_to_road_steering_rad(
+        g_ackermann.telemetry.steering_encoder_measured_deg,
+        &g_ackermann.config);
 
     /* Keep encoder telemetry live while path control is disabled so the
      * time-limited motor test page can display measured speed and angle. */
@@ -569,30 +624,28 @@ void Ackermann_control_step(float left_measured_rad_s,
         max_steering_step);
 
     Ackermann_electronic_differential(g_ackermann.speed_reference_mps,
-                                      g_ackermann.steering_reference_rad,
+                                      measured_steering_rad,
                                       &g_ackermann.config,
                                       &left_target_mps,
                                       &right_target_mps);
-    left_target_rad_s = left_target_mps / g_ackermann.config.wheel_radius_m;
-    right_target_rad_s = right_target_mps / g_ackermann.config.wheel_radius_m;
 
-    largest_wheel_target = ack_absf(left_target_rad_s);
-    if(ack_absf(right_target_rad_s) > largest_wheel_target)
+    largest_wheel_target = ack_absf(left_target_mps);
+    if(ack_absf(right_target_mps) > largest_wheel_target)
     {
-        largest_wheel_target = ack_absf(right_target_rad_s);
+        largest_wheel_target = ack_absf(right_target_mps);
     }
-    if(largest_wheel_target > g_ackermann.config.max_wheel_speed_rad_s)
+    if(largest_wheel_target > g_ackermann.config.max_wheel_speed_mps)
     {
-        wheel_scale = g_ackermann.config.max_wheel_speed_rad_s / largest_wheel_target;
-        left_target_rad_s *= wheel_scale;
-        right_target_rad_s *= wheel_scale;
+        wheel_scale = g_ackermann.config.max_wheel_speed_mps / largest_wheel_target;
+        left_target_mps *= wheel_scale;
+        right_target_mps *= wheel_scale;
     }
 
     if((target_speed_mps <= g_ackermann.config.stop_speed_threshold_mps)
     && (g_ackermann.speed_reference_mps <= g_ackermann.config.stop_speed_threshold_mps))
     {
-        left_target_rad_s = 0.0f;
-        right_target_rad_s = 0.0f;
+        left_target_mps = 0.0f;
+        right_target_mps = 0.0f;
         Motor_rear_speed_pid_reset();
         Motor_set_pwm(0.0f, 0.0f);
     }
@@ -600,18 +653,18 @@ void Ackermann_control_step(float left_measured_rad_s,
     {
         /* Ackermann 到这里已经完成 Stanley、电子差速和目标限速。
          * 后轮 PID、抗积分饱和和 PWM 输出从此处统一交给 motor.c。 */
-        left_motor_input.target_rad_s = left_target_rad_s;
-        left_motor_input.measured_rad_s = g_ackermann.left_measured_rad_s;
+        left_motor_input.target_mps = left_target_mps;
+        left_motor_input.measured_mps = g_ackermann.left_measured_mps;
         left_motor_input.feedforward_pwm =
-            g_ackermann.config.left_feedforward_pwm_per_rad_s * left_target_rad_s;
+            g_ackermann.config.left_feedforward_pwm_per_mps * left_target_mps;
         left_motor_input.output_sign = g_ackermann.config.left_motor_sign;
         left_motor_input.pwm_limit = 0.0f;
         left_motor_input.enabled = ZF_TRUE;
 
-        right_motor_input.target_rad_s = right_target_rad_s;
-        right_motor_input.measured_rad_s = g_ackermann.right_measured_rad_s;
+        right_motor_input.target_mps = right_target_mps;
+        right_motor_input.measured_mps = g_ackermann.right_measured_mps;
         right_motor_input.feedforward_pwm =
-            g_ackermann.config.right_feedforward_pwm_per_rad_s * right_target_rad_s;
+            g_ackermann.config.right_feedforward_pwm_per_mps * right_target_mps;
         right_motor_input.output_sign = g_ackermann.config.right_motor_sign;
         right_motor_input.pwm_limit = 0.0f;
         right_motor_input.enabled = ZF_TRUE;
@@ -622,10 +675,10 @@ void Ackermann_control_step(float left_measured_rad_s,
     }
     Motor_get_rear_speed_status(&left_motor_status, &right_motor_status);
 
-    steering_encoder_target_deg = g_ackermann.config.steering_center_encoder_deg
-        + g_ackermann.config.steering_sign
-        * g_ackermann.steering_reference_rad * ACKERMANN_RAD_TO_DEG
-        * g_ackermann.config.steering_encoder_deg_per_road_deg;
+    steering_encoder_target_deg =
+        Ackermann_road_steering_to_encoder_angle_deg(
+            g_ackermann.steering_reference_rad,
+            &g_ackermann.config);
     Servo_set_angle(steering_encoder_target_deg);
     Servo_position_control(&servo_duty);
 
@@ -634,8 +687,8 @@ void Ackermann_control_step(float left_measured_rad_s,
     g_ackermann.telemetry.steering_target_rad = g_ackermann.steering_reference_rad;
     g_ackermann.telemetry.steering_encoder_target_deg = steering_encoder_target_deg;
     g_ackermann.telemetry.steering_encoder_measured_deg = Servo_get_angle();
-    g_ackermann.telemetry.left_target_rad_s = left_target_rad_s;
-    g_ackermann.telemetry.right_target_rad_s = right_target_rad_s;
+    g_ackermann.telemetry.left_target_mps = left_target_mps;
+    g_ackermann.telemetry.right_target_mps = right_target_mps;
     g_ackermann.telemetry.left_pwm = left_motor_status.pwm;
     g_ackermann.telemetry.right_pwm = right_motor_status.pwm;
 }

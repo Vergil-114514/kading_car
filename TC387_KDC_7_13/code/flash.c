@@ -22,15 +22,15 @@ uint8   cell_num = 100;
 #define IMU_Y_SIGN_2_SAVE_PAGE  (9)
 
 #define GPS_MAX_NUM    (30)
-#define IMU_MAX_NUM    (1024)
+#define IMU_MAX_NUM    (FLASH_IMU_POINT_CAPACITY)
 uint8   GPS_savenum = 0;
 uint16  IMU_savenum = 0;
 uint8   GPS_savenum_point = 0;
 uint16  IMU_savenum_point = 0;
 double GPS_lat[30];
 double GPS_lon[30];
-float  IMU_X[1024];
-float  IMU_Y[1024];
+float  IMU_X[FLASH_IMU_POINT_CAPACITY];
+float  IMU_Y[FLASH_IMU_POINT_CAPACITY];
 
 float  IMU_X_Point[1024];
 float  IMU_Y_Point[1024];

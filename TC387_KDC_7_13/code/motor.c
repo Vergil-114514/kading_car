@@ -1,12 +1,19 @@
 #include "zf_common_headfile.h"
 
-#define SERVO_POS_DEADBAND_DEG      (0.4f)
+#define SERVO_POS_DEADBAND_DEG      (0.5f)
+#define SERVO_POS_RESTART_DEG       (1.0f)
 #define SERVO_SPD_DEADBAND_DPS      (2.0f)
 #define SERVO_MAX_SPEED_DPS         (720.0f)
-#define SERVO_PWM_LIMIT             (2000.0f)
+#define SERVO_PWM_MIN_EFFECTIVE     (3000.0f)
+#define SERVO_PWM_LIMIT             (8000.0f)
 #define SERVO_PWM_INTEGRAL_LIMIT    (1200.0f)
+#define SERVO_ANGLE_MIN_DEG         (52.91015625f)  /* Raw encoder count 602. */
+#define SERVO_ANGLE_CENTER_DEG      (76.9921875f)   /* Raw encoder count 876. */
+#define SERVO_ANGLE_MAX_DEG         (104.765625f)   /* Raw encoder count 1192. */
 #define MOTOR_DRIVER_ENABLE_LEVEL   (0U)
 #define MOTOR_DRIVER_DISABLE_LEVEL  (1U)
+#define MOTOR_DRIVER_FIXED_DUTY     (100U)
+#define MOTOR_DRIVER_DUTY_OFFSET    (100U)
 
 /*
  * =========================== PID 参数统一修改区 ===========================
@@ -15,32 +22,32 @@
  */
 static const MOTOR_PID_GAIN motor_default_steering_position_pid =
 {
-    60.0f,      /* Kp */
+    400.0f,     /* Kp */
     1.0f,       /* Ki */
     0.5f,       /* Kd */
     400.0f,     /* 积分输出限幅 */
-    2000.0f,    /* PWM 输出限幅 */
-    0.3f        /* 角度死区，单位 deg */
+    SERVO_PWM_LIMIT,        /* PWM 输出限幅 */
+    SERVO_POS_DEADBAND_DEG  /* 角度死区，单位 deg */
 };
 
 static const MOTOR_PID_GAIN motor_default_left_rear_speed_pid =
 {
-    550.0f,     /* Kp */
-    120.0f,     /* Ki */
+    2750.0f,    /* Kp, migrated from the former rad/s feedback scale. */
+    600.0f,     /* Ki, migrated from the former rad/s feedback scale. */
     0.0f,       /* Kd */
     3000.0f,    /* 积分输出限幅 */
     8000.0f,    /* PWM 输出限幅 */
-    0.05f       /* 速度死区，单位 rad/s */
+    0.01f       /* 速度死区，单位 m/s */
 };
 
 static const MOTOR_PID_GAIN motor_default_right_rear_speed_pid =
 {
-    550.0f,     /* Kp */
-    120.0f,     /* Ki */
+    2750.0f,    /* Kp, migrated from the former rad/s feedback scale. */
+    600.0f,     /* Ki, migrated from the former rad/s feedback scale. */
     0.0f,       /* Kd */
     3000.0f,    /* 积分输出限幅 */
     8000.0f,    /* PWM 输出限幅 */
-    0.05f       /* 速度死区，单位 rad/s */
+    0.01f       /* 速度死区，单位 m/s */
 };
 
 /* 串级转向控制的外环和内环参数；当前阿克曼控制使用上面的直接位置环。 */
@@ -69,6 +76,7 @@ static MOTOR_REAR_SPEED_STATUS motor_right_rear_speed_status;
 static uint8 motor_l_armed = ZF_FALSE;
 static uint8 motor_r_armed = ZF_FALSE;
 static uint8 servo_armed = ZF_FALSE;
+static uint8 servo_position_drive_active = ZF_FALSE;
 
 static const MOTOR_DRIVER motor_l_driver =
 {
@@ -366,7 +374,7 @@ static float motor_pid_update(MOTOR_PID *pid,
 
 /**
  * @brief 计算一个后轮速度环，并把 PID、前馈、运行限幅和防反向制动统一处理。
- * @note  measurement 必须是 encoder.c 已经换算好的 rad/s，不在本函数读取硬件计数器。
+ * @note  measurement 必须是 encoder.c 已经换算好的 m/s，不在本函数读取硬件计数器。
  */
 static float motor_rear_speed_pid_update(MOTOR_PID *pid,
                                          const MOTOR_REAR_SPEED_INPUT *input,
@@ -390,16 +398,16 @@ static float motor_rear_speed_pid_update(MOTOR_PID *pid,
     if(input == 0)
     {
         motor_pid_reset(pid);
-        status->target_rad_s = 0.0f;
-        status->measured_rad_s = 0.0f;
-        status->error_rad_s = 0.0f;
+        status->target_mps = 0.0f;
+        status->measured_mps = 0.0f;
+        status->error_mps = 0.0f;
         status->pwm = 0.0f;
         return 0.0f;
     }
 
-    status->target_rad_s = input->target_rad_s;
-    status->measured_rad_s = input->measured_rad_s;
-    status->error_rad_s = input->target_rad_s - input->measured_rad_s;
+    status->target_mps = input->target_mps;
+    status->measured_mps = input->measured_mps;
+    status->error_mps = input->target_mps - input->measured_mps;
 
     if(input->enabled == 0U)
     {
@@ -408,7 +416,7 @@ static float motor_rear_speed_pid_update(MOTOR_PID *pid,
         return 0.0f;
     }
 
-    error = status->error_rad_s;
+    error = status->error_mps;
     if(motor_absf(error) <= pid->gain.deadband)
     {
         error = 0.0f;
@@ -417,7 +425,7 @@ static float motor_rear_speed_pid_update(MOTOR_PID *pid,
     if(pid->state.initialized != ZF_FALSE)
     {
         /* 速度环对测量值微分，目标速度阶跃时不会产生微分冲击。 */
-        derivative = -(input->measured_rad_s - pid->state.last_measurement)
+        derivative = -(input->measured_mps - pid->state.last_measurement)
                    / MOTOR_CONTROL_DT;
     }
     else
@@ -473,13 +481,13 @@ static float motor_rear_speed_pid_update(MOTOR_PID *pid,
     }
 
     if((allow_active_braking == 0U)
-    && (((input->target_rad_s > 0.0f) && (output_candidate < 0.0f))
-     || ((input->target_rad_s < 0.0f) && (output_candidate > 0.0f))))
+    && (((input->target_mps > 0.0f) && (output_candidate < 0.0f))
+     || ((input->target_mps < 0.0f) && (output_candidate > 0.0f))))
     {
         output_candidate = 0.0f;
         /* 防止反向积分在禁止主动制动时长期残留。 */
-        if(((input->target_rad_s > 0.0f) && (pid->state.integral < 0.0f))
-        || ((input->target_rad_s < 0.0f) && (pid->state.integral > 0.0f)))
+        if(((input->target_mps > 0.0f) && (pid->state.integral < 0.0f))
+        || ((input->target_mps < 0.0f) && (pid->state.integral > 0.0f)))
         {
             pid->state.integral = 0.0f;
         }
@@ -487,7 +495,7 @@ static float motor_rear_speed_pid_update(MOTOR_PID *pid,
 
     pid->state.error = error;
     pid->state.last_error = error;
-    pid->state.last_measurement = input->measured_rad_s;
+    pid->state.last_measurement = input->measured_mps;
     pid->state.derivative = derivative;
     pid->state.output = output_candidate;
 
@@ -528,6 +536,7 @@ static void motor_driver_set_pwm(const MOTOR_DRIVER *driver, float pwm, uint8 ar
     float limit;
     float abs_pwm;
     uint32 duty;
+    uint32 active_duty;
 
     if(driver == 0)
     {
@@ -549,6 +558,12 @@ static void motor_driver_set_pwm(const MOTOR_DRIVER *driver, float pwm, uint8 ar
         duty = PWM_DUTY_MAX;
     }
 
+    active_duty = duty + MOTOR_DRIVER_DUTY_OFFSET;
+    if(active_duty > PWM_DUTY_MAX)
+    {
+        active_duty = PWM_DUTY_MAX;
+    }
+
     if((armed == ZF_FALSE) || (duty == 0U))
     {
         /* 先关断功率级，再预置安全 PWM；互补 PWM 的 0% 本身不是自由滑行。 */
@@ -559,18 +574,18 @@ static void motor_driver_set_pwm(const MOTOR_DRIVER *driver, float pwm, uint8 ar
     else if(pwm > 0.0f)
     {
         /*
-         * 正向单极性调制：phase A 固定为低侧导通，phase B 输出互补 PWM。
+         * 正向单极性调制：phase A 保持 100 基准占空比，phase B 输出 duty + 100。
          * 先固定旧活动桥臂，最后才使能低有效 DIS。
          */
-        pwm_hl_set_duty(driver->phase_a.top_pin, 100U);
-        pwm_hl_set_duty(driver->phase_b.top_pin, duty+100);
+        pwm_hl_set_duty(driver->phase_a.top_pin, MOTOR_DRIVER_FIXED_DUTY);
+        pwm_hl_set_duty(driver->phase_b.top_pin, active_duty);
         gpio_set_level(driver->enable_pin, MOTOR_DRIVER_ENABLE_LEVEL);
     }
     else
     {
-        /* 反向使用对称状态：phase B 固定低，phase A 输出互补 PWM。 */
-        pwm_hl_set_duty(driver->phase_b.top_pin, 100U);
-        pwm_hl_set_duty(driver->phase_a.top_pin, duty+100);
+        /* 反向使用对称状态：phase B 保持 100，phase A 输出 duty + 100。 */
+        pwm_hl_set_duty(driver->phase_b.top_pin, MOTOR_DRIVER_FIXED_DUTY);
+        pwm_hl_set_duty(driver->phase_a.top_pin, active_duty);
         gpio_set_level(driver->enable_pin, MOTOR_DRIVER_ENABLE_LEVEL);
     }
 }
@@ -657,13 +672,13 @@ void Motor_rear_speed_pid_reset(void)
     motor_pid_reset(&motor_left_rear_speed_pid);
     motor_pid_reset(&motor_right_rear_speed_pid);
 
-    motor_left_rear_speed_status.target_rad_s = 0.0f;
-    motor_left_rear_speed_status.measured_rad_s = 0.0f;
-    motor_left_rear_speed_status.error_rad_s = 0.0f;
+    motor_left_rear_speed_status.target_mps = 0.0f;
+    motor_left_rear_speed_status.measured_mps = 0.0f;
+    motor_left_rear_speed_status.error_mps = 0.0f;
     motor_left_rear_speed_status.pwm = 0.0f;
-    motor_right_rear_speed_status.target_rad_s = 0.0f;
-    motor_right_rear_speed_status.measured_rad_s = 0.0f;
-    motor_right_rear_speed_status.error_rad_s = 0.0f;
+    motor_right_rear_speed_status.target_mps = 0.0f;
+    motor_right_rear_speed_status.measured_mps = 0.0f;
+    motor_right_rear_speed_status.error_mps = 0.0f;
     motor_right_rear_speed_status.pwm = 0.0f;
 }
 
@@ -694,13 +709,13 @@ void motor_init(void)
 }
 
 /**
- * @brief  初始化转向电机驱动和串级 PID，并读取 encoder.c 的初始位置。
- * @note   本函数不初始化、不读取、不清零编码器。编码器必须先由
- *         QdInit() 初始化；实车启动前应先把前轮摆到直行位置。
+ * @brief  初始化转向电机驱动和位置 PID。
+ * @note   Ackermann 初始化早于首次 GetSpeed() 采样，因此在 DIS 保持高电平时
+ *         预置标定中心；首次 5 ms 编码器采样会立即覆盖为真实角度。
  */
 void Servo_init(void)
 {
-    servo_duty.motor_speed = 0.0f;
+    servo_duty.motor_speed = SERVO_ANGLE_CENTER_DEG;
     servo_duty.feedforward_pwm = 0.0f;
     servo_armed = ZF_FALSE;
 
@@ -708,11 +723,11 @@ void Servo_init(void)
     motor_driver_set_pwm(&servo_driver, 0.0f, servo_armed);
     servo_pid_load_default();
 
+    car_angle = SERVO_ANGLE_CENTER_DEG;
     Servo_pid_reset();
     /* 编码器由 QdInit/GetSpeed 管理，motor.c 只使用计算结果。 */
     servo_pid.angle_deg = car_angle;
     servo_pid.speed_dps = car_speed[0];
-    servo_duty.motor_speed = servo_pid.angle_deg;
     servo_pid.target_angle_deg = servo_pid.angle_deg;
 }
 
@@ -770,6 +785,7 @@ void Motor_enable_channels(uint8 left_enable,
     gpio_set_level(motor_L_DIS, MOTOR_DRIVER_DISABLE_LEVEL);
     gpio_set_level(motor_R_DIS, MOTOR_DRIVER_DISABLE_LEVEL);
     gpio_set_level(motor_T_DIS, MOTOR_DRIVER_DISABLE_LEVEL);
+    servo_position_drive_active = ZF_FALSE;
 
     motor_l_armed = (left_enable != 0U) ? ZF_TRUE : ZF_FALSE;
     motor_r_armed = (right_enable != 0U) ? ZF_TRUE : ZF_FALSE;
@@ -839,11 +855,15 @@ void Servo_control(MOTOR_DUTY *duty)
 void Servo_position_control(MOTOR_DUTY *duty)
 {
     float position_error;
+    float abs_position_error;
     float pwm_output;
     float output_limit;
+    uint8 crossed_target;
 
     if(duty == 0)
     {
+        servo_position_drive_active = ZF_FALSE;
+        motor_pid_reset(&servo_position_pid);
         motor_driver_set_pwm(&servo_driver, 0.0f, servo_armed);
         return;
     }
@@ -851,8 +871,35 @@ void Servo_position_control(MOTOR_DUTY *duty)
     /* 不读取硬件编码器，直接使用 encoder.c 已经计算好的角度和速度。 */
     servo_pid.angle_deg = car_angle;
     servo_pid.speed_dps = car_speed[0];
-    servo_pid.target_angle_deg = motor_normalize_angle(duty->motor_speed);
+    servo_pid.target_angle_deg = motor_clampf(duty->motor_speed,
+                                              SERVO_ANGLE_MIN_DEG,
+                                              SERVO_ANGLE_MAX_DEG);
     position_error = motor_angle_error(servo_pid.target_angle_deg, servo_pid.angle_deg);
+    abs_position_error = motor_absf(position_error);
+    crossed_target = (servo_position_drive_active != ZF_FALSE)
+                  && (servo_position_pid.state.initialized != ZF_FALSE)
+                  && (((position_error > 0.0f)
+                       && (servo_position_pid.state.last_error < 0.0f))
+                      || ((position_error < 0.0f)
+                          && (servo_position_pid.state.last_error > 0.0f)));
+
+    /*
+     * Stop inside 0.5 deg, but require 1.0 deg before restarting. This
+     * hysteresis prevents encoder noise from repeatedly applying +/-3000 PWM.
+     * Also coast after crossing the target so minimum PWM cannot immediately
+     * reverse the motor around a small residual error.
+     */
+    if((crossed_target != ZF_FALSE)
+        || (abs_position_error <= SERVO_POS_DEADBAND_DEG)
+        || ((servo_position_drive_active == ZF_FALSE)
+            && (abs_position_error < SERVO_POS_RESTART_DEG)))
+    {
+        servo_position_drive_active = ZF_FALSE;
+        motor_pid_reset(&servo_position_pid);
+        motor_driver_set_pwm(&servo_driver, 0.0f, servo_armed);
+        return;
+    }
+    servo_position_drive_active = ZF_TRUE;
 
     /* The steering target is rate limited by the Ackermann layer, therefore
      * derivative-on-error is acceptable and does not produce a large setpoint
@@ -865,10 +912,18 @@ void Servo_position_control(MOTOR_DUTY *duty)
     pwm_output += duty->feedforward_pwm;
 
     output_limit = servo_position_pid.gain.output_limit;
-    if(output_limit <= 0.0f)
+    if((output_limit <= 0.0f) || (output_limit > servo_driver.pwm_limit))
     {
         output_limit = servo_driver.pwm_limit;
     }
+
+    if(motor_absf(pwm_output) < SERVO_PWM_MIN_EFFECTIVE)
+    {
+        pwm_output = (position_error > 0.0f)
+                   ? SERVO_PWM_MIN_EFFECTIVE
+                   : -SERVO_PWM_MIN_EFFECTIVE;
+    }
+
     pwm_output = motor_clampf(pwm_output, -output_limit, output_limit);
     servo_position_pid.state.output = pwm_output;
     motor_driver_set_pwm(&servo_driver, pwm_output, servo_armed);
@@ -876,11 +931,13 @@ void Servo_position_control(MOTOR_DUTY *duty)
 
 /**
  * @brief  设置转向电机目标角度。
- * @param  angle_deg 目标角度，单位 deg，内部会归一化到 0~360。
+ * @param  angle_deg 绝对编码器目标角度，单位 deg，内部限制到标定机械范围。
  */
 void Servo_set_angle(float angle_deg)
 {
-    servo_duty.motor_speed = motor_normalize_angle(angle_deg);
+    servo_duty.motor_speed = motor_clampf(angle_deg,
+                                          SERVO_ANGLE_MIN_DEG,
+                                          SERVO_ANGLE_MAX_DEG);
 }
 
 /**
@@ -913,6 +970,7 @@ void Servo_set_position_pid_gain(const MOTOR_PID_GAIN *position_gain)
 
     motor_pid_copy_gain(&servo_position_pid, position_gain);
     motor_pid_reset(&servo_position_pid);
+    servo_position_drive_active = ZF_FALSE;
 }
 
 float Servo_get_angle(void)
@@ -930,6 +988,7 @@ void Servo_pid_reset(void)
     motor_pid_reset(&servo_pid.position);
     motor_pid_reset(&servo_pid.speed);
     motor_pid_reset(&servo_position_pid);
+    servo_position_drive_active = ZF_FALSE;
     servo_pid.target_angle_deg = motor_normalize_angle(servo_duty.motor_speed);
     servo_pid.target_speed_dps = 0.0f;
     servo_pid.speed_dps = 0.0f;

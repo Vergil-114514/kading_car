@@ -29,7 +29,8 @@
 //#define     ENCODER_BR_B     (TIM4_ENCODER_CH2_P00_9)
 
 /* 只补充外部调用所需声明，不改变原有 count/car_speed 主体。 */
-extern int16 count[3];
+extern int16 count_num[3];
+/* Linear speeds in m/s, calculated from each 5 ms count increment. */
 extern float car_speed[3];
 extern float car_angle;
 

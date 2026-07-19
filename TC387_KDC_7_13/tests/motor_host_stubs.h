@@ -41,6 +41,22 @@ typedef int gpio_pin_enum;
 #define motor_TB1            (14)
 #define motor_TB2            (15)
 
+#define motor_L_DIS          motor_L_ENABLE
+#define motor_L_PWM1         motor_LA1
+#define motor_L_PWM1N        motor_LA2
+#define motor_L_PWM2         motor_LB1
+#define motor_L_PWM2N        motor_LB2
+#define motor_R_DIS          motor_R_ENABLE
+#define motor_R_PWM1         motor_RA1
+#define motor_R_PWM1N        motor_RA2
+#define motor_R_PWM2         motor_RB1
+#define motor_R_PWM2N        motor_RB2
+#define motor_T_DIS          motor_T_ENABLE
+#define motor_T_PWM1         motor_TA1
+#define motor_T_PWM1N        motor_TA2
+#define motor_T_PWM2         motor_TB1
+#define motor_T_PWM2N        motor_TB2
+
 typedef struct
 {
     pwm_channel_enum top_pin;
@@ -101,8 +117,8 @@ typedef struct
 
 typedef struct
 {
-    float target_rad_s;
-    float measured_rad_s;
+    float target_mps;
+    float measured_mps;
     float feedforward_pwm;
     float output_sign;
     float pwm_limit;
@@ -111,9 +127,9 @@ typedef struct
 
 typedef struct
 {
-    float target_rad_s;
-    float measured_rad_s;
-    float error_rad_s;
+    float target_mps;
+    float measured_mps;
+    float error_mps;
     float pwm;
 } MOTOR_REAR_SPEED_STATUS;
 
@@ -124,6 +140,10 @@ extern MOTOR_CASCADE_PID servo_pid;
 extern MOTOR_PID servo_position_pid;
 extern float car_speed[3];
 extern float car_angle;
+
+void Motor_get_default_pid_gains(MOTOR_PID_GAIN *steering_position_gain,
+                                 MOTOR_PID_GAIN *left_rear_speed_gain,
+                                 MOTOR_PID_GAIN *right_rear_speed_gain);
 
 void pwm_hl_init(pwm_channel_enum top, pwm_channel_enum bottom,
                  uint32 frequency, uint32 duty);
@@ -142,6 +162,11 @@ void Motor_rear_speed_control(const MOTOR_REAR_SPEED_INPUT *left,
                               uint8 allow_active_braking);
 void Motor_get_rear_speed_status(MOTOR_REAR_SPEED_STATUS *left_status,
                                  MOTOR_REAR_SPEED_STATUS *right_status);
+void Motor_enable_channels(uint8 left_enable,
+                           uint8 right_enable,
+                           uint8 steering_enable);
+void Servo_init(void);
+void Servo_set_angle(float angle_deg);
 void Servo_pid_reset(void);
 
 #endif

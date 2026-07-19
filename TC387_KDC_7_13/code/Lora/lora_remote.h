@@ -13,7 +13,7 @@
  * 3. 将摇杆原始值转换为 [-1.0, 1.0] 的无量纲控制量。
  *
  * 调用约定：
- * - LoraRemote_Task() 放在主循环，用于消费完整 LoRa 帧；
+ * - LoraRemote_Task() 放在 CPU2 的 5 ms 控制中断，用于消费完整 LoRa 帧；
  * - LoraRemote_5msCallback() 每 5 ms 调用，用于链路看门狗计时；
  * - 控制模块通过 LoraRemote_GetState() 读取快照，不直接访问底层驱动。
  */
@@ -27,11 +27,12 @@
 /* 连续 300 ms 没有发布新帧时，所有使用者必须进入失联保护。 */
 #define LORA_REMOTE_TIMEOUT_MS                (300U)
 
-/* 摇杆数组映射：左摇杆 X 控制转向，左摇杆 Y 控制速度。 */
+/* 摇杆数组映射：左摇杆 X 控制转向，右摇杆 Y 控制速度。 */
 #define LORA_REMOTE_STEERING_AXIS_INDEX       (0U)
-#define LORA_REMOTE_THROTTLE_AXIS_INDEX       (1U)
+#define LORA_REMOTE_THROTTLE_AXIS_INDEX       (3U)
 
-/* 测试模式下，遥控器四个拨码开关与测试通道一一对应。 */
+/* 遥控器 S5 是协议中的第一个拨码；测试模式仍复用四个拨码选择通道。 */
+#define LORA_REMOTE_SWITCH_S5_INDEX           (0U)
 #define LORA_REMOTE_SWITCH_STEERING_INDEX     (0U)
 #define LORA_REMOTE_SWITCH_LEFT_REAR_INDEX    (1U)
 #define LORA_REMOTE_SWITCH_RIGHT_REAR_INDEX   (2U)
@@ -56,7 +57,7 @@ typedef struct
 
 /** 初始化适配层状态并启动底层 3A22 串口接收。 */
 void LoraRemote_Init(void);
-/** 主循环任务：读取一帧底层快照并原子式发布给控制模块。 */
+/** CPU2 5 ms 任务：读取一帧底层快照并原子式发布给控制模块。 */
 void LoraRemote_Task(void);
 /** 5 ms 周期回调：更新底层及上层链路看门狗。 */
 void LoraRemote_5msCallback(void);

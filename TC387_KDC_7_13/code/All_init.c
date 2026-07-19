@@ -3,7 +3,8 @@
 /**
  * @brief CPU0 外设初始化。
  *
- * CPU0 当前负责调试串口、惯导、三个电机及编码器、LoRa 和菜单。
+ * CPU0 完成调试串口、惯导、三个电机、编码器、LoRa 和菜单的上电初始化；
+ * 周期运行时，惯导属于 CPU1，实时车辆控制属于 CPU2。
  * 系统时钟、四核启动/同步以及同步后的 PIT 启动仍保留在 cpu0_main.c。
  */
 void CPU0_Peripheral_Init(uint8_t use_gps, uint8_t navigation_solution)
@@ -47,20 +48,20 @@ void CPU0_Peripheral_Init(uint8_t use_gps, uint8_t navigation_solution)
 
 /**
  * @brief CPU1 外设初始化。
- * @note  当前预留给 WiFi/SPI 通信和组合导航。
+ * @note  周期惯导由 CPU1 PIT ISR 执行；此入口暂无额外外设初始化。
  */
 void CPU1_Peripheral_Init(void)
 {
-    /* TODO：在这里加入 CPU1 的 WiFi/SPI、GPS 等外设初始化。 */
+    /* 周期任务在 CPU1 PIT ISR 中运行。 */
 }
 
 /**
  * @brief CPU2 外设初始化。
- * @note  当前预留给 MPC/车辆控制计算。
+ * @note  遥控、Ackermann、PID 和 PWM 由 CPU2 PIT ISR 执行。
  */
 void CPU2_Peripheral_Init(void)
 {
-    /* TODO：在这里加入 CPU2 的控制算法相关外设初始化。 */
+    /* 控制所需外设已在 CPU0 启动阶段初始化。 */
 }
 
 /**

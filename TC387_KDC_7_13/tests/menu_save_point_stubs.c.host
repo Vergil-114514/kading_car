@@ -1,0 +1,20 @@
+#include "save_point_mode.h"
+
+unsigned g_save_point_init_calls;
+unsigned g_save_point_enter_calls;
+unsigned g_save_point_task_calls;
+unsigned g_save_point_100ms_calls;
+unsigned g_save_point_5ms_calls;
+unsigned g_save_point_exit_calls;
+SavePointModeStatus_t g_save_point_status;
+
+void SavePointMode_Init(void) { ++g_save_point_init_calls; }
+void SavePointMode_Enter(void) { ++g_save_point_enter_calls; }
+void SavePointMode_Task(void) { ++g_save_point_task_calls; }
+void SavePointMode_100msTask(void) { ++g_save_point_100ms_calls; }
+void SavePointMode_5msCallback(void) { ++g_save_point_5ms_calls; }
+void SavePointMode_Exit(void) { ++g_save_point_exit_calls; }
+void SavePointMode_GetStatus(SavePointModeStatus_t *status)
+{
+    if(status != 0) { *status = g_save_point_status; }
+}

@@ -3,7 +3,8 @@
 /*
  * LoRa 遥控器适配层实现。
  *
- * 底层 3A22 驱动在串口中断中组帧，本文件在主循环中取走完整帧，再通过
+ * 底层 3A22 驱动在 CPU2 串口中断中组帧，本文件在 CPU2 的 5 ms 控制中断
+ * 中取走完整帧，再通过
  * 双缓冲发布给 5 ms 控制回调。写缓冲完全更新后才切换 g_active_index，
  * 可以避免控制回调读到“摇杆来自新帧、按键仍来自旧帧”的混合数据。
  */
@@ -19,7 +20,7 @@ typedef struct
 
 /*
  * g_frame[2]：一个供读、一个供写；g_active_index 指向当前可读缓冲。
- * volatile 用于明确这些量可能在主循环和 5 ms 回调之间异步变化。
+ * volatile 用于明确这些量可能在帧发布和 5 ms 看门狗之间变化。
  */
 static volatile LoraRemoteFrame_t g_frame[2];
 static volatile uint8_t g_active_index = 0U;
@@ -114,7 +115,7 @@ void LoraRemote_5msCallback(void)
     sequence = g_frame[index].sequence;
     if(sequence != g_last_watchdog_sequence)
     {
-        /* 检测到主循环刚发布的新帧，链路年龄清零。 */
+        /* 检测到本周期刚发布的新帧，链路年龄清零。 */
         g_last_watchdog_sequence = sequence;
         g_age_ms = 0U;
     }

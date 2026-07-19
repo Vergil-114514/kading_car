@@ -17,9 +17,11 @@ extern "C" {
 #define TOPSPEED_GPS_INS_AUTO_ORIGIN_ENABLE        (1U)
 
 /*
- * CPU0_NAVIGATION_SOLUTION 可选择的三个编译期常量。
+ * CPU1_NAVIGATION_SOLUTION 可选择的三个编译期常量。
  * 三种后端只负责姿态/航向滤波；车辆坐标均使用同一套后轮编码器航位推算，
- * CPU0_USE_GPS=1 时再由 GPS 对局部坐标和速度进行校正。
+ * CPU1_USE_GPS=1 时再由 GPS 对通用导航坐标和速度进行校正。
+ * 存点模式的局部坐标始终直接使用 Mahony 航向和编码器速度积分，不使用
+ * GPS 位置修正。
  */
 #define NAVIGATION_SOLUTION_MAHONY                  (1U)
 #define NAVIGATION_SOLUTION_FUSION                  (2U)
@@ -59,6 +61,20 @@ typedef struct
     uint8_t enabled;
     uint8_t valid;
 } TopSpeed_GPS_INS_GPS_Output;
+
+/** CPU1-only local odometry used by SAVE POINT mode. */
+typedef struct
+{
+    TopSpeed_GPS_INS_Point position_m;
+    float relative_yaw_deg;
+    float encoder_speed_mps;
+    float distance_m;
+    uint32_t reset_sequence;
+    uint8_t initialized;
+    uint8_t heading_valid;
+    uint8_t encoder_valid;
+    uint8_t valid;
+} TopSpeed_GPS_INS_LocalOdometryOutput;
 
 /*
  * Initializes the selected attitude solution, IMU/INS and optional GPS.
@@ -101,15 +117,21 @@ void TopSpeed_GPS_INS_PortGPSLocalUpdate(float east_m,
                                         uint8_t valid);
 
 /* Encoder adapter: signed forward speed or signed delta count.
- * Call from CPU0 main/ISR context; the single-slot mailbox keeps the newest
- * sample and is intentionally not a cross-core queue. */
+ * CPU2 control ISR publishes the newest sample through a single-slot mailbox;
+ * CPU1 consumes it on the next 5 ms navigation tick. */
 void TopSpeed_GPS_INS_PortEncoderSpeedUpdate(float speed_mps);
 void TopSpeed_GPS_INS_PortEncoderInvalidate(void);
 void TopSpeed_GPS_INS_PortEncoderDeltaUpdate(int32_t delta_count,
                                              float metre_per_count,
                                              float sample_period_s);
 
-/* Sequence-checked snapshots safe to read from the CPU0 main loop. */
+/* CPU2 requests a new (0,0,0 deg) launch frame. CPU1 applies it on its next
+ * 5 ms navigation tick and returns the request sequence in the snapshot. */
+uint32_t TopSpeed_GPS_INS_PortRequestLocalOdometryReset(void);
+void TopSpeed_GPS_INS_PortGetLocalOdometryOutput(
+    TopSpeed_GPS_INS_LocalOdometryOutput *output);
+
+/* Sequence-checked snapshots safe for CPU0/CPU2 cross-core readers. */
 void TopSpeed_GPS_INS_PortGetOutput(TopSpeed_GPS_INS_Output *output);
 void TopSpeed_GPS_INS_PortGetIMUOutput(TopSpeed_GPS_INS_IMU_Output *output);
 void TopSpeed_GPS_INS_PortGetGPSOutput(TopSpeed_GPS_INS_GPS_Output *output);

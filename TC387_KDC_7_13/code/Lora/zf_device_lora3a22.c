@@ -37,12 +37,12 @@
 
 /*
  * 本文件只实现 3A22 的串口收帧和链路状态，不直接解释摇杆方向或控制电机。
- * UART 回调属于中断上下文，必须保持定长、无阻塞；完整帧由主循环通过
- * lora3a22_get_snapshot() 取走。
+ * UART 回调属于 CPU2 中断上下文，必须保持定长、无阻塞；完整帧由 CPU2
+ * 的 5 ms 控制任务通过 lora3a22_get_snapshot() 取走。
  *
  * 全局状态含义：
  * - lora3a22_uart_data：UART 中断逐字节填充的 18 字节缓冲；
- * - finish_flag：存在一帧尚未被主循环消费的数据；
+ * - finish_flag：存在一帧尚未被 5 ms 控制任务消费的数据；
  * - state_flag：底层链路在 300 ms 超时窗口内有效；
  * - response_time：距离最近有效帧的时间；
  * - frame_sequence：校验正确的有效帧累计序号。
@@ -101,7 +101,7 @@ void lora3a22_uart_callback(void )
             memcpy((uint8*)&lora3a22_uart_transfer, (uint8*)lora3a22_uart_data, \
             sizeof(lora3a22_uart_data));
 
-            // 完整拷贝后再发布新帧标志，主循环不会读到半帧数据。
+            // 完整拷贝后再发布新帧标志，控制任务不会读到半帧数据。
             lora3a22_response_time = 0U;
             lora3a22_state_flag = 1U;
             ++lora3a22_frame_sequence;
