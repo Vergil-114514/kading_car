@@ -36,16 +36,16 @@
 #define TRACK_PARK_TARGET_CONFIGURED              (1U)
 #endif
 #ifndef TRACK_PARK_TARGET_X_M
-#define TRACK_PARK_TARGET_X_M                     (-7.0f)
+#define TRACK_PARK_TARGET_X_M                     (-7.2f)
 #endif
 #ifndef TRACK_PARK_TARGET_Y_M
-#define TRACK_PARK_TARGET_Y_M                     (0.5f)
+#define TRACK_PARK_TARGET_Y_M                     (1.4f)
 #endif
 #ifndef TRACK_PARK_TARGET_YAW_DEG
 #define TRACK_PARK_TARGET_YAW_DEG                 (0.0f)
 #endif
 
-#define TRACK_PARK_MAX_REVERSE_SPEED_MPS          (0.5f)
+#define TRACK_PARK_MAX_REVERSE_SPEED_MPS          (2.5f)
 #define TRACK_PARK_POSITION_TOLERANCE_M           (0.15f)
 #define TRACK_PARK_HEADING_TOLERANCE_DEG          (5.0f)
 #define TRACK_PARK_ENTRY_STOP_SPEED_MPS           (0.05f)
@@ -76,10 +76,10 @@
 #endif
 
 /* Route pure-pursuit tuning defaults shared by both directions. */
-#define REVERSE_TRACK_MAX_SPEED_MPS              (4.0f)
-#define REVERSE_TRACK_ACCELERATION_MPS2          (1.5f)
-#define REVERSE_TRACK_MAX_LATERAL_ACCEL_MPS2     (1.5f)
-#define REVERSE_TRACK_STOP_DISTANCE_M            (0.50f)
+#define REVERSE_TRACK_MAX_SPEED_MPS              (8.0f)
+#define REVERSE_TRACK_ACCELERATION_MPS2          (3.0f)
+#define REVERSE_TRACK_MAX_LATERAL_ACCEL_MPS2     (3.0f)
+#define REVERSE_TRACK_STOP_DISTANCE_M            (0.40f)
 #define REVERSE_TRACK_LOOKAHEAD_BASE_M           (0.75f)
 #define REVERSE_TRACK_LOOKAHEAD_TIME_S           (0.75f)
 #define REVERSE_TRACK_LOOKAHEAD_MIN_M            (0.75f)

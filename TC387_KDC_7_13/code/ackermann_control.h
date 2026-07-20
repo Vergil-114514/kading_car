@@ -6,7 +6,7 @@
 /* Measured distance between axles and between the rear-wheel contact centres. */
 #define ACKERMANN_WHEELBASE_M                  (0.58f)
 #define ACKERMANN_TRACK_WIDTH_M                (0.60f)
-#define ACKERMANN_MAX_WHEEL_SPEED_MPS          (3.0f)
+#define ACKERMANN_MAX_WHEEL_SPEED_MPS          (8.0f)
 #define ACKERMANN_CONTROL_PERIOD_S             (0.005f)
 #define ACKERMANN_CONTROL_PERIOD_MS            (5U)
 
